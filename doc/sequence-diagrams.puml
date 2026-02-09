@@ -1,0 +1,666 @@
+@startuml 用户注册登录流程
+
+'样式配置
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam shadowing false
+
+skinparam actor {
+    BackgroundColor #4A90E2
+    BorderColor #2E5C8A
+    FontColor White
+    FontSize 14
+}
+
+skinparam participant {
+    BackgroundColor<<frontend>> #67C23A
+    BackgroundColor<<backend>> #E6A23C
+    BackgroundColor<<database>> #909399
+    BackgroundColor<<cache>> #F56C6C
+    BackgroundColor<<storage>> #409EFF
+    BorderColor #333333
+    FontColor White
+    FontSize 13
+}
+
+skinparam sequence {
+    ArrowColor #606266
+    LifeLineBorderColor #DCDFE6
+    LifeLineBackgroundColor #F2F6FC
+    BoxBackgroundColor #ECF5FF
+    BoxBorderColor #409EFF
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #E6A23C
+    FontSize 11
+}
+
+title <size:18><b>用户注册和登录时序图</b></size>
+
+actor 用户 as User
+participant "  前端  \n<size:11>(Vue)</size>" as Frontend <<frontend>>
+participant "  后端  \n<size:11>(Gin)</size>" as Backend <<backend>>
+participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
+
+== <b><size:14>用户注册流程</size></b> ==
+
+User -> Frontend: 填写注册信息\n(用户名、密码、昵称)
+Frontend -> Frontend: 前端验证\n(密码强度、格式等)
+Frontend -> Backend: POST /api/auth/register\n{username, password, nickname}
+Backend -> Backend: 验证用户名是否已存在
+Backend -> Backend: bcrypt加密密码
+Backend -> DB: INSERT INTO users
+DB --> Backend: 返回用户ID
+Backend --> Frontend: 返回成功信息
+Frontend --> User: 显示注册成功，跳转登录
+
+== <b><size:14>用户登录流程</size></b> ==
+
+User -> Frontend: 输入用户名和密码
+Frontend -> Backend: POST /api/auth/login\n{username, password}
+Backend -> DB: SELECT * FROM users\nWHERE username = ?
+DB --> Backend: 返回用户信息
+Backend -> Backend: bcrypt验证密码
+Backend -> Backend: 生成JWT Token\n(包含user_id, 有效期7天)
+Backend --> Frontend: 返回Token和用户��息
+Frontend -> Frontend: 存储Token到localStorage
+Frontend --> User: 跳转到主页面
+
+== <b><size:14>后续请求认证</size></b> ==
+
+User -> Frontend: 访问需要认证的功能
+Frontend -> Backend: 请求API\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT中间件验证Token
+alt Token有效
+    Backend -> Backend: 从Token提取user_id
+    Backend -> Backend: 执行业务逻辑
+    Backend --> Frontend: 返回数据
+    Frontend --> User: 显示结果
+else Token无效或过期
+    Backend --> Frontend: 返回401 Unauthorized
+    Frontend -> Frontend: 清除localStorage中的Token
+    Frontend --> User: 跳转到登录页面
+end
+
+@enduml
+
+@startuml 文件上传流程
+
+'样式配置
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam shadowing false
+
+skinparam actor {
+    BackgroundColor #4A90E2
+    BorderColor #2E5C8A
+    FontColor White
+    FontSize 14
+}
+
+skinparam participant {
+    BackgroundColor<<frontend>> #67C23A
+    BackgroundColor<<backend>> #E6A23C
+    BackgroundColor<<database>> #909399
+    BackgroundColor<<cache>> #F56C6C
+    BackgroundColor<<storage>> #409EFF
+    BackgroundColor<<service>> #C678DD
+    BorderColor #333333
+    FontColor White
+    FontSize 13
+}
+
+skinparam sequence {
+    ArrowColor #606266
+    LifeLineBorderColor #DCDFE6
+    LifeLineBackgroundColor #F2F6FC
+    BoxBackgroundColor #ECF5FF
+    BoxBorderColor #409EFF
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #E6A23C
+    FontSize 11
+}
+
+title <size:18><b>文件上传时序图</b></size>\n<size:13>(支持分片上传和断点续传)</size>
+
+actor 用户 as User
+participant "  前端  \n<size:11>(Vue)</size>" as Frontend <<frontend>>
+participant "  后端  \n<size:11>(Gin)</size>" as Backend <<backend>>
+participant " 缩略图服务 " as ThumbService <<service>>
+participant "  文件系统  " as FileSystem <<storage>>
+participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
+participant " Redis缓存 " as Redis <<cache>>
+
+== <b><size:14>小文件直接上传 (< 5MB)</size></b> ==
+
+User -> Frontend: 选择小文件上传
+Frontend -> Backend: POST /api/files/upload\nHeader: Authorization: Bearer {token}\nBody: FormData(file, folder_id)
+Backend -> Backend: JWT验证，提取user_id
+Backend -> Backend: 验证文件大小和类型
+Backend -> Backend: 生成UUID作为文件标识
+Backend -> FileSystem: 保存文件到指定路径
+Backend -> DB: INSERT INTO files
+Backend --> Frontend: 返回文件信息
+Frontend --> User: 显示上传成功
+
+== <b><size:14>大文件分片上传 (>= 5MB)</size></b> ==
+
+User -> Frontend: 选择大文件上传
+Frontend -> Frontend: 计算文件MD5\n作为唯一标识
+Frontend -> Frontend: 将文件分片\n(每片5MB)
+
+Frontend -> Backend: POST /api/files/upload/init\nHeader: Authorization: Bearer {token}\nBody: {file_name, file_size, file_md5,\ntotal_chunks, folder_id}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: 检查是否存在相同MD5的文件\n(秒传功能)
+
+alt 文件已存在（秒传）
+    Backend -> DB: 复制文件记录\n关联到当前用户
+    Backend --> Frontend: 返回{upload_id, status: "completed"}
+    Frontend --> User: 显示秒传成功
+else 文件不存在，需要上传
+    Backend -> Backend: 生成upload_id (UUID)
+    Backend -> Redis: 存储上传任务信息\nKEY: upload:{upload_id}\nVALUE: {file_md5, total_chunks,\nuploaded_chunks: [], user_id, folder_id}\nEXPIRE: 24小时
+    Backend --> Frontend: 返回{upload_id, uploaded_chunks: []}
+
+    loop 上传每个分片
+        Frontend -> Backend: POST /api/files/upload/chunk\nHeader: Authorization: Bearer {token}\nBody: FormData(upload_id, chunk_index,\nchunk_data, chunk_md5)
+        Backend -> Backend: JWT验证
+        Backend -> Redis: 获取上传任务信息
+
+        alt 分片已上传（断点续传）
+            Backend --> Frontend: 返回{status: "exists"}
+        else 分片未上传
+            Backend -> Backend: 验证chunk_md5
+            Backend -> FileSystem: 保存分片到临时目录\n{temp_path}/{upload_id}/chunk_{index}
+            Backend -> Redis: 更新uploaded_chunks列表\n添加chunk_index
+            Backend --> Frontend: 返回{status: "success",\nprogress: uploaded/total}
+            Frontend -> Frontend: 更新进度条
+            Frontend --> User: 显示上传进度 X%
+        end
+    end
+
+    Frontend -> Backend: POST /api/files/upload/complete\nHeader: Authorization: Bearer {token}\nBody: {upload_id, file_md5}
+    Backend -> Backend: JWT验证
+    Backend -> Redis: 获取上传任务信息
+    Backend -> Backend: 验证所有分片已上传
+
+    Backend -> FileSystem: 合并所有分片\n生成完整文件
+    Backend -> Backend: 计算合并后文件MD5\n验证完���性
+    Backend -> FileSystem: 删除临时分片文件
+
+    alt 文件是图片
+        Backend -> Backend: 检测MIME类型
+        Backend -> ThumbService: 生成缩略图
+        ThumbService -> FileSystem: 读取原始图片
+        ThumbService -> ThumbService: 缩放处理
+        ThumbService -> FileSystem: 保存缩略图
+        ThumbService --> Backend: 返回缩略图路径
+    end
+
+    Backend -> DB: INSERT INTO files\n(name, file_path, thumbnail_path,\nfolder_id, user_id, file_size,\nmime_type, file_md5, is_image)
+    DB --> Backend: 返回file_id
+    Backend -> Redis: 删除上传任务信息
+    Backend --> Frontend: 返回文件信息
+    Frontend --> User: 显示上传完成
+end
+
+== <b><size:14>断点续传 (网络中断后恢复)</size></b> ==
+
+User -> Frontend: 刷新页面或重新打开
+Frontend -> Frontend: 从localStorage读取\n未完成的upload_id
+Frontend -> Backend: GET /api/files/upload/status/{upload_id}\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证
+Backend -> Redis: 获取上传任务信息
+
+alt 上传任务存在
+    Backend --> Frontend: 返回{uploaded_chunks: [0,1,2,5],\ntotal_chunks: 10}
+    Frontend -> Frontend: 计算未上传的分片\n[3,4,6,7,8,9]
+    Frontend --> User: 显示"继续上传"按钮
+    User -> Frontend: 点击继续上传
+    note right of Frontend
+        从未上传的分片继续
+        跳过已上传的分片
+    end note
+else 上传任务已过期
+    Backend --> Frontend: 返回404
+    Frontend --> User: 提示需要重新上传
+end
+
+@enduml
+
+@startuml 文件下载流程
+
+'样式配置
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam shadowing false
+
+skinparam actor {
+    BackgroundColor #4A90E2
+    BorderColor #2E5C8A
+    FontColor White
+    FontSize 14
+}
+
+skinparam participant {
+    BackgroundColor<<frontend>> #67C23A
+    BackgroundColor<<backend>> #E6A23C
+    BackgroundColor<<database>> #909399
+    BackgroundColor<<storage>> #409EFF
+    BorderColor #333333
+    FontColor White
+    FontSize 13
+}
+
+skinparam sequence {
+    ArrowColor #606266
+    LifeLineBorderColor #DCDFE6
+    LifeLineBackgroundColor #F2F6FC
+    BoxBackgroundColor #ECF5FF
+    BoxBorderColor #409EFF
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #E6A23C
+    FontSize 11
+}
+
+title <size:18><b>文件下载时序图</b></size>\n<size:13>(支持断点续传)</size>
+
+actor 用户 as User
+participant "  前端  \n<size:11>(Vue)</size>" as Frontend <<frontend>>
+participant "  后端  \n<size:11>(Gin)</size>" as Backend <<backend>>
+participant "  文件系统  " as FileSystem <<storage>>
+participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
+
+== <b><size:14>普通下载 (小文件或首次下载)</size></b> ==
+
+User -> Frontend: 点击文件下载按钮
+Frontend -> Backend: GET /api/files/{file_id}/download\nHeader: Authorization: Bearer {token}
+
+Backend -> Backend: JWT中间件验证Token\n提取user_id
+Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回文件信息\n(file_path, original_name, mime_type, file_size)
+
+alt 文件存在且属于当前用户
+    Backend -> FileSystem: 读取文件
+    FileSystem --> Backend: 返回文件数据流
+    Backend --> Frontend: 返回文件流\nStatus: 200 OK\nContent-Type: {mime_type}\nContent-Length: {file_size}\nAccept-Ranges: bytes\nContent-Disposition: attachment;\nfilename="{original_name}"
+    Frontend -> Frontend: 浏览器触发下载
+    Frontend --> User: 文件下载到本地
+else 文件不存在或无权限
+    Backend --> Frontend: 返回404或403错误
+    Frontend --> User: 显示错误提示
+end
+
+== <b><size:14>断点续传下载 (网络中断后恢复)</size></b> ==
+
+User -> Frontend: 下载过程中网络中断
+Frontend -> Frontend: 记录已下载字节数\n(浏览器自动或手动记录)
+
+User -> Frontend: 点击"继续下载"按钮
+Frontend -> Backend: GET /api/files/{file_id}/download\nHeader: Authorization: Bearer {token}\nHeader: Range: bytes={已下载字节}-
+
+note right of Frontend
+    Range 头示例：
+    Range: bytes=1048576-
+    表示从第1048576字节开始下载
+    (已下载1MB，继续下载剩余部分)
+end note
+
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回文件信息
+
+alt 文件存在且有权限
+    Backend -> Backend: 解析Range头\n计算起始和结束位置
+    Backend -> Backend: 验证Range范围有效性
+
+    alt Range有效
+        Backend -> FileSystem: 从指定位置读取文件\nSeek到起始位置
+        FileSystem --> Backend: 返回部分文件数据流
+        Backend --> Frontend: 返回部分文件流\nStatus: 206 Partial Content\nContent-Type: {mime_type}\nContent-Length: {剩余大小}\nContent-Range: bytes {start}-{end}/{total}\nAccept-Ranges: bytes
+        Frontend -> Frontend: 浏览器继续下载\n追加到已下载部分
+        Frontend --> User: 继续下载，显示进度
+    else Range无效
+        Backend --> Frontend: 返回416 Range Not Satisfiable\nContent-Range: bytes */{file_size}
+        Frontend --> User: 提示Range错误，重新下载
+    end
+else 文件不存在或无权限
+    Backend --> Frontend: 返回404或403错误
+    Frontend --> User: 显示错误提示
+end
+
+== <b><size:14>分段下载 (大文件优化)</size></b> ==
+
+note over Frontend, Backend
+    对于超大文件，前端可以主动分段下载
+    提高下载稳定性和可恢复性
+end note
+
+User -> Frontend: 点击下载大文件
+Frontend -> Backend: HEAD /api/files/{file_id}/download\nHeader: Authorization: Bearer {token}
+Backend --> Frontend: 返回文件元信息\nContent-Length: {file_size}\nAccept-Ranges: bytes
+
+Frontend -> Frontend: 计算分段策略\n例如：每段10MB
+
+loop 下载每个分段
+    Frontend -> Backend: GET /api/files/{file_id}/download\nHeader: Range: bytes={start}-{end}
+    Backend -> FileSystem: 读取指定范围
+    Backend --> Frontend: 返回206 Partial Content\n该分段数据
+    Frontend -> Frontend: 保存分段到内存/临时文件
+    Frontend --> User: 更新下载进度
+end
+
+Frontend -> Frontend: 合并所有分段\n生成完整文件
+Frontend --> User: 下载完成，保存到本地
+
+@enduml
+
+@startuml 图片预览流程
+
+'样式配置
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam shadowing false
+
+skinparam actor {
+    BackgroundColor #4A90E2
+    BorderColor #2E5C8A
+    FontColor White
+    FontSize 14
+}
+
+skinparam participant {
+    BackgroundColor<<frontend>> #67C23A
+    BackgroundColor<<backend>> #E6A23C
+    BackgroundColor<<database>> #909399
+    BackgroundColor<<storage>> #409EFF
+    BorderColor #333333
+    FontColor White
+    FontSize 13
+}
+
+skinparam sequence {
+    ArrowColor #606266
+    LifeLineBorderColor #DCDFE6
+    LifeLineBackgroundColor #F2F6FC
+    BoxBackgroundColor #ECF5FF
+    BoxBorderColor #409EFF
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #E6A23C
+    FontSize 11
+}
+
+title <size:18><b>图片预览时序图</b></size>\n<size:13>(缩略图和原图)</size>
+
+actor 用户 as User
+participant "  前端  \n<size:11>(Vue)</size>" as Frontend <<frontend>>
+participant "  后端  \n<size:11>(Gin)</size>" as Backend <<backend>>
+participant "  文件系统  " as FileSystem <<storage>>
+participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
+
+== <b><size:14>文件列表加载 (显示缩略图)</size></b> ==
+
+User -> Frontend: 进入文件夹
+Frontend -> Backend: GET /api/files?folder_id={folder_id}\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM files\nWHERE folder_id = ? AND user_id = ?\nORDER BY created_at DESC
+DB --> Backend: 返回文件列表
+Backend --> Frontend: 返回文件信息\n[{id, name, is_image, thumbnail_url}]
+
+loop 对每个图片文件
+    Frontend -> Backend: GET /api/files/{file_id}/thumbnail
+    Backend -> Backend: JWT验证
+    Backend -> DB: SELECT thumbnail_path FROM files\nWHERE id = ? AND user_id = ?
+    DB --> Backend: 返回缩略图路径
+    Backend -> FileSystem: 读取缩略图文件
+    FileSystem --> Backend: 返回缩略图数据
+    Backend --> Frontend: 返回缩略图\nContent-Type: image/jpeg
+    Frontend --> User: 显示缩略图
+end
+
+== <b><size:14>点击图片预览原图</size></b> ==
+
+User -> Frontend: 点击图片缩略图
+Frontend -> Frontend: 打开图片预览组件\n(ImagePreview.vue)
+Frontend -> Backend: GET /api/files/{file_id}/preview\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT file_path, mime_type\nFROM files\nWHERE id = ? AND user_id = ? AND is_image = 1
+DB --> Backend: 返回原图路径
+
+alt 图片存在且有权限
+    Backend -> FileSystem: 读取原图文件
+    FileSystem --> Backend: 返回原图数据
+    Backend --> Frontend: 返回原图\nContent-Type: {mime_type}
+    Frontend --> User: 在预览组件中显示原图\n(支持缩放、旋转、切换)
+else 无权限或文件不存在
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+@enduml
+
+@startuml 文件夹操作流程
+
+'样式配置
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam shadowing false
+
+skinparam actor {
+    BackgroundColor #4A90E2
+    BorderColor #2E5C8A
+    FontColor White
+    FontSize 14
+}
+
+skinparam participant {
+    BackgroundColor<<frontend>> #67C23A
+    BackgroundColor<<backend>> #E6A23C
+    BackgroundColor<<database>> #909399
+    BackgroundColor<<storage>> #409EFF
+    BorderColor #333333
+    FontColor White
+    FontSize 13
+}
+
+skinparam sequence {
+    ArrowColor #606266
+    LifeLineBorderColor #DCDFE6
+    LifeLineBackgroundColor #F2F6FC
+    BoxBackgroundColor #ECF5FF
+    BoxBorderColor #409EFF
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #E6A23C
+    FontSize 11
+}
+
+title <size:18><b>文件夹管理时序图</b></size>\n<size:13>(创建、删除、重命名)</size>
+
+actor 用户 as User
+participant "  前端  \n<size:11>(Vue)</size>" as Frontend <<frontend>>
+participant "  后端  \n<size:11>(Gin)</size>" as Backend <<backend>>
+participant "  文件系统  " as FileSystem <<storage>>
+participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
+
+== <b><size:14>创建文件夹</size></b> ==
+
+User -> Frontend: 点击"新建文件夹"按钮
+Frontend -> Frontend: 弹出输入框
+User -> Frontend: 输入文件夹名称
+Frontend -> Backend: POST /api/folders\nHeader: Authorization: Bearer {token}\nBody: {name, parent_id}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT path FROM folders\nWHERE id = parent_id
+DB --> Backend: 返回父文件夹路径
+Backend -> Backend: 计算完整路径\npath = parent_path + "/" + name
+Backend -> DB: INSERT INTO folders\n(name, parent_id, user_id, path)
+DB --> Backend: 返回folder_id
+Backend --> Frontend: 返回文件夹信息\n{id, name, path}
+Frontend --> User: 刷新文件夹树\n显示新文件夹
+
+== <b><size:14>重命名文件夹</size></b> ==
+
+User -> Frontend: 右键点击文件夹\n选择"重命名"
+Frontend -> Frontend: 弹出输入框\n显示当前名称
+User -> Frontend: 输入新名称
+Frontend -> Backend: PUT /api/folders/{folder_id}\nHeader: Authorization: Bearer {token}\nBody: {name}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM folders\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回文件夹信息
+
+alt 文件夹存在且有权限
+    Backend -> Backend: 重新计算路径
+    Backend -> DB: UPDATE folders\nSET name = ?, path = ?\nWHERE id = ?
+    DB --> Backend: 更新成功
+
+    Backend -> DB: SELECT * FROM folders\nWHERE path LIKE 'old_path/%'
+    DB --> Backend: 返回所有子文件夹
+
+    loop 更新所有子文件夹路径
+        Backend -> DB: UPDATE folders\nSET path = REPLACE(path, 'old_path', 'new_path')
+        DB --> Backend: 更新成功
+    end
+
+    Backend --> Frontend: 返回成功信息
+    Frontend --> User: 刷新文件夹树
+else 无权限或不存在
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+== <b><size:14>删除文件夹</size></b> ==
+
+User -> Frontend: 右键点击文件夹\n选择"删除"
+Frontend -> Frontend: 弹出确认对话框
+User -> Frontend: 确认删除
+Frontend -> Backend: DELETE /api/folders/{folder_id}\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM folders\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回文件夹信息
+
+alt 文件夹存在且有权限
+    Backend -> DB: 开启事务
+
+    note right of Backend
+        由于设置了外键级联删除
+        (ON DELETE CASCADE)
+        删除文件夹会自动删除：
+        1. 所有子文件夹
+        2. 文件夹内的所有文件记录
+    end note
+
+    Backend -> DB: SELECT file_path, thumbnail_path\nFROM files\nWHERE folder_id = ? OR folder_id IN\n(SELECT id FROM folders WHERE path LIKE 'folder_path/%')
+    DB --> Backend: 返回所有文件路径
+
+    loop 删除所有物理文件
+        Backend -> FileSystem: 删除文件
+        Backend -> FileSystem: 删除缩略图（如果存在）
+    end
+
+    Backend -> DB: DELETE FROM folders\nWHERE id = ?
+    DB --> Backend: 删除成功（级联删除子文件夹和文件记录）
+
+    Backend -> DB: 提交事务
+    Backend --> Frontend: 返回成功信息
+    Frontend --> User: 刷新文件夹树\n移除已删除文件夹
+else 无权限或不存在
+    Backend -> DB: 回滚事务
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+@enduml
+
+@startuml 文件移动流程
+
+'样式配置
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+skinparam roundcorner 10
+skinparam shadowing false
+
+skinparam actor {
+    BackgroundColor #4A90E2
+    BorderColor #2E5C8A
+    FontColor White
+    FontSize 14
+}
+
+skinparam participant {
+    BackgroundColor<<frontend>> #67C23A
+    BackgroundColor<<backend>> #E6A23C
+    BackgroundColor<<database>> #909399
+    BorderColor #333333
+    FontColor White
+    FontSize 13
+}
+
+skinparam sequence {
+    ArrowColor #606266
+    LifeLineBorderColor #DCDFE6
+    LifeLineBackgroundColor #F2F6FC
+    BoxBackgroundColor #ECF5FF
+    BoxBorderColor #409EFF
+}
+
+skinparam note {
+    BackgroundColor #FFF9E6
+    BorderColor #E6A23C
+    FontSize 11
+}
+
+title <size:18><b>文件移动时序图</b></size>
+
+actor 用户 as User
+participant "  前端  \n<size:11>(Vue)</size>" as Frontend <<frontend>>
+participant "  后端  \n<size:11>(Gin)</size>" as Backend <<backend>>
+participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
+
+User -> Frontend: 选择文件\n点击"移动"按钮
+Frontend -> Frontend: 弹出文件夹选择对话框
+Frontend -> Backend: GET /api/folders\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM folders\nWHERE user_id = ?\nORDER BY path
+DB --> Backend: 返回用户的所有文件夹
+Backend --> Frontend: 返回文件夹列表
+Frontend --> User: 显示文件夹树供选择
+
+User -> Frontend: 选择目标文件夹
+Frontend -> Backend: PUT /api/files/{file_id}/move\nHeader: Authorization: Bearer {token}\nBody: {target_folder_id}
+Backend -> Backend: JWT验证，提取user_id
+
+Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回文件信息
+
+Backend -> DB: SELECT * FROM folders\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回目标文件夹信息
+
+alt 文件和目标文件夹都存在且有权限
+    Backend -> DB: UPDATE files\nSET folder_id = ?\nWHERE id = ?
+    DB --> Backend: 更新成功
+    Backend --> Frontend: 返回成功信息
+    Frontend --> User: 刷新文件列表\n显示移动成功提示
+else 文件或文件夹不存在或无权限
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+@enduml
