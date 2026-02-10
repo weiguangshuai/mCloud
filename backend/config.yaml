@@ -32,6 +32,20 @@ redis:
 jwt:
   secret: "your-secret-key-change-in-production"
   expire_hours: 168  # 7天
+  refresh_expire_hours: 672 # 28天
+
+auth_cookie:
+  access_name: "access_token"
+  refresh_name: "refresh_token"
+  http_only: true
+  same_site: "Lax"
+  secure: false                    # 内网可为false，公网建议true
+  path: "/"
+
+csrf:
+  enabled: true
+  header_name: "X-CSRF-Token"
+  cookie_name: "csrf_token"
 
 thumbnail:
   width: 300

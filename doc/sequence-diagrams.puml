@@ -1,4 +1,4 @@
-@startuml 用户注册登录流程
+﻿@startuml 用户注册登录流程
 
 '样式配置
 skinparam backgroundColor #FEFEFE
@@ -54,6 +54,7 @@ Backend -> Backend: 验证用户名是否已存在
 Backend -> Backend: bcrypt加密密码
 Backend -> DB: INSERT INTO users
 DB --> Backend: 返回用户ID
+Backend -> DB: INSERT INTO folders\n(name='/', parent_id=NULL,\nuser_id=?, is_root=1, path='/')
 Backend --> Frontend: 返回成功信息
 Frontend --> User: 显示注册成功，跳转登录
 
@@ -64,16 +65,15 @@ Frontend -> Backend: POST /api/auth/login\n{username, password}
 Backend -> DB: SELECT * FROM users\nWHERE username = ?
 DB --> Backend: 返回用户信息
 Backend -> Backend: bcrypt验证密码
-Backend -> Backend: 生成JWT Token\n(包含user_id, 有效期7天)
-Backend --> Frontend: 返回Token和用户��息
-Frontend -> Frontend: 存储Token到localStorage
+Backend -> Backend: 生成JWT access_token\n(包含user_id, 短期有效)
+Backend --> Frontend: Set-Cookie写入access_token\n(可选refresh_token)\n并返回用户信息
 Frontend --> User: 跳转到主页面
 
 == <b><size:14>后续请求认证</size></b> ==
 
 User -> Frontend: 访问需要认证的功能
-Frontend -> Backend: 请求API\nHeader: Authorization: Bearer {token}
-Backend -> Backend: JWT中间件验证Token
+Frontend -> Backend: 请求API\n自动携带Cookie
+Backend -> Backend: JWT中间件验证access_token
 alt Token有效
     Backend -> Backend: 从Token提取user_id
     Backend -> Backend: 执行业务逻辑
@@ -81,8 +81,14 @@ alt Token有效
     Frontend --> User: 显示结果
 else Token无效或过期
     Backend --> Frontend: 返回401 Unauthorized
-    Frontend -> Frontend: 清除localStorage中的Token
-    Frontend --> User: 跳转到登录页面
+    Frontend -> Backend: POST /api/auth/refresh\n自动携带refresh_cookie
+    alt refresh成功
+        Backend --> Frontend: Set-Cookie更新access_token
+        Frontend --> User: 自动重试并显示结果
+    else refresh失败
+        Backend --> Frontend: 返回401
+        Frontend --> User: 跳转到登录页面
+    end
 end
 
 @enduml
@@ -141,12 +147,13 @@ participant " Redis缓存 " as Redis <<cache>>
 == <b><size:14>小文件直接上传 (< 5MB)</size></b> ==
 
 User -> Frontend: 选择小文件上传
-Frontend -> Backend: POST /api/files/upload\nHeader: Authorization: Bearer {token}\nBody: FormData(file, folder_id)
+Frontend -> Backend: POST /api/files/upload\nCookie: access_token\nBody: FormData(file, folder_id)
 Backend -> Backend: JWT验证，提取user_id
 Backend -> Backend: 验证文件大小和类型
 Backend -> Backend: 生成UUID作为文件标识
 Backend -> FileSystem: 保存文件到指定路径
-Backend -> DB: INSERT INTO files
+Backend -> DB: INSERT INTO file_objects
+Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
 Backend --> Frontend: 返回文件信息
 Frontend --> User: 显示上传成功
 
@@ -156,7 +163,7 @@ User -> Frontend: 选择大文件上传
 Frontend -> Frontend: 计算文件MD5\n作为唯一标识
 Frontend -> Frontend: 将文件分片\n(每片5MB)
 
-Frontend -> Backend: POST /api/files/upload/init\nHeader: Authorization: Bearer {token}\nBody: {file_name, file_size, file_md5,\ntotal_chunks, folder_id}
+Frontend -> Backend: POST /api/files/upload/init\nCookie: access_token\nBody: {file_name, file_size, file_md5,\ntotal_chunks, folder_id}
 Backend -> Backend: JWT验证，提取user_id
 
 ' 配额检查
@@ -168,10 +175,11 @@ alt 配额不足
     Backend --> Frontend: 返回400错误\n{message: "存储空间不足",\nstorage_quota, storage_used,\navailable_space, required_space}
     Frontend --> User: 显示配额不足提示
 else 配额充足
-    Backend -> DB: 检查用户范围内是否存在相同MD5\nSELECT * FROM files\nWHERE user_id = ? AND file_md5 = ?\nAND deleted_at IS NULL
+    Backend -> DB: 检查用户范围内是否存在相同MD5\nSELECT fo.* FROM file_objects fo\nJOIN files f ON f.file_object_id = fo.id\nWHERE f.user_id = ? AND fo.file_md5 = ?\nAND f.deleted_at IS NULL
 
 alt 文件已存在（秒传）
-    Backend -> DB: 复制文件记录\n关联到当前用户
+    Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
+    Backend -> DB: UPDATE file_objects\nSET ref_count = ref_count + 1\nWHERE id = ?
     Backend --> Frontend: 返回{upload_id, status: "completed"}
     Frontend --> User: 显示秒传成功
 else 文件不存在，需要上传
@@ -180,7 +188,7 @@ else 文件不存在，需要上传
     Backend --> Frontend: 返回{upload_id, uploaded_chunks: []}
 
     loop 上传每个分片
-        Frontend -> Backend: POST /api/files/upload/chunk\nHeader: Authorization: Bearer {token}\nBody: FormData(upload_id, chunk_index,\nchunk_data, chunk_md5)
+        Frontend -> Backend: POST /api/files/upload/chunk\nCookie: access_token\nBody: FormData(upload_id, chunk_index,\nchunk_data, chunk_md5)
         Backend -> Backend: JWT验证
         Backend -> Redis: 获取上传任务信息
 
@@ -196,7 +204,7 @@ else 文件不存在，需要上传
         end
     end
 
-    Frontend -> Backend: POST /api/files/upload/complete\nHeader: Authorization: Bearer {token}\nBody: {upload_id, file_md5}
+    Frontend -> Backend: POST /api/files/upload/complete\nCookie: access_token\nBody: {upload_id, file_md5}
     Backend -> Backend: JWT验证
     Backend -> Redis: 获取上传任务信息
     Backend -> Backend: 验证所有分片已上传
@@ -214,7 +222,8 @@ else 文件不存在，需要上传
         ThumbService --> Backend: 返回缩略图路径
     end
 
-    Backend -> DB: INSERT INTO files\n(name, file_path, thumbnail_path,\nfolder_id, user_id, file_size,\nmime_type, file_md5, is_image)
+    Backend -> DB: INSERT INTO file_objects\n(file_path, thumbnail_path, file_size,\nmime_type, file_md5, is_image)
+    Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
     DB --> Backend: 返回file_id
     Backend -> Redis: 删除上传任务信息
     Backend --> Frontend: 返回文件信息
@@ -226,7 +235,7 @@ end
 
 User -> Frontend: 刷新页面或重新打开
 Frontend -> Frontend: 从localStorage读取\n未完成的upload_id
-Frontend -> Backend: GET /api/files/upload/status/{upload_id}\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/files/upload/status/{upload_id}\nCookie: access_token
 Backend -> Backend: JWT验证
 Backend -> Redis: 获取上传任务信息
 
@@ -296,10 +305,10 @@ participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
 == <b><size:14>普通下载 (小文件或首次下载)</size></b> ==
 
 User -> Frontend: 点击文件下载按钮
-Frontend -> Backend: GET /api/files/{file_id}/download\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/files/{file_id}/download\nCookie: access_token
 
 Backend -> Backend: JWT中间件验证Token\n提取user_id
-Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?
+Backend -> DB: SELECT f.*, fo.file_path, fo.mime_type, fo.file_size\nFROM files f JOIN file_objects fo ON f.file_object_id = fo.id\nWHERE f.id = ? AND f.user_id = ? AND f.deleted_at IS NULL
 DB --> Backend: 返回文件信息\n(file_path, original_name, mime_type, file_size)
 
 alt 文件存在且属于当前用户
@@ -319,7 +328,7 @@ User -> Frontend: 下载过程中网络中断
 Frontend -> Frontend: 记录已下载字节数\n(浏览器自动或手动记录)
 
 User -> Frontend: 点击"继续下载"按钮
-Frontend -> Backend: GET /api/files/{file_id}/download\nHeader: Authorization: Bearer {token}\nHeader: Range: bytes={已下载字节}-
+Frontend -> Backend: GET /api/files/{file_id}/download\nCookie: access_token\nHeader: Range: bytes={已下载字节}-
 
 note right of Frontend
     Range 头示例：
@@ -329,7 +338,7 @@ note right of Frontend
 end note
 
 Backend -> Backend: JWT验证，提取user_id
-Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?
+Backend -> DB: SELECT f.*, fo.file_path, fo.mime_type, fo.file_size\nFROM files f JOIN file_objects fo ON f.file_object_id = fo.id\nWHERE f.id = ? AND f.user_id = ? AND f.deleted_at IS NULL
 DB --> Backend: 返回文件信息
 
 alt 文件存在且有权限
@@ -359,7 +368,7 @@ note over Frontend, Backend
 end note
 
 User -> Frontend: 点击下载大文件
-Frontend -> Backend: HEAD /api/files/{file_id}/download\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: HEAD /api/files/{file_id}/download\nCookie: access_token
 Backend --> Frontend: 返回文件元信息\nContent-Length: {file_size}\nAccept-Ranges: bytes
 
 Frontend -> Frontend: 计算分段策略\n例如：每段10MB
@@ -427,16 +436,16 @@ participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
 == <b><size:14>文件列表加载 (显示缩略图)</size></b> ==
 
 User -> Frontend: 进入文件夹
-Frontend -> Backend: GET /api/files?folder_id={folder_id}\n&page=1&page_size=20\n&sort_by=created_at&order=desc\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/files?folder_id={folder_id}\n&page=1&page_size=20\n&sort_by=created_at&order=desc\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
-Backend -> DB: SELECT * FROM files\nWHERE folder_id = ? AND user_id = ?\nAND deleted_at IS NULL\nORDER BY created_at DESC\nLIMIT 20 OFFSET 0
+Backend -> DB: SELECT f.id, f.name, fo.is_image, fo.thumbnail_path\nFROM files f JOIN file_objects fo ON f.file_object_id = fo.id\nWHERE f.folder_id = ? AND f.user_id = ?\nAND f.deleted_at IS NULL\nORDER BY f.created_at DESC\nLIMIT 20 OFFSET 0
 DB --> Backend: 返回文件列表和分页信息
 Backend --> Frontend: 返回文件信息和分页数据\n{files: [{id, name, is_image, thumbnail_url}],\npagination: {page, page_size, total, has_next}}
 
 loop 对每个图片文件
     Frontend -> Backend: GET /api/files/{file_id}/thumbnail
     Backend -> Backend: JWT验证
-    Backend -> DB: SELECT thumbnail_path FROM files\nWHERE id = ? AND user_id = ?
+    Backend -> DB: SELECT fo.thumbnail_path FROM files f\nJOIN file_objects fo ON f.file_object_id = fo.id\nWHERE f.id = ? AND f.user_id = ?
     DB --> Backend: 返回缩略图路径
     Backend -> FileSystem: 读取缩略图文件
     FileSystem --> Backend: 返回缩略图数据
@@ -448,9 +457,9 @@ end
 
 User -> Frontend: 点击图片缩略图
 Frontend -> Frontend: 打开图片预览组件\n(ImagePreview.vue)
-Frontend -> Backend: GET /api/files/{file_id}/preview\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/files/{file_id}/preview\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
-Backend -> DB: SELECT file_path, mime_type\nFROM files\nWHERE id = ? AND user_id = ? AND is_image = 1
+Backend -> DB: SELECT fo.file_path, fo.mime_type\nFROM files f JOIN file_objects fo ON f.file_object_id = fo.id\nWHERE f.id = ? AND f.user_id = ? AND fo.is_image = 1
 DB --> Backend: 返回原图路径
 
 alt 图片存在且有权限
@@ -517,7 +526,7 @@ participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
 User -> Frontend: 点击"新建文件夹"按钮
 Frontend -> Frontend: 弹出输入框
 User -> Frontend: 输入文件夹名称
-Frontend -> Backend: POST /api/folders\nHeader: Authorization: Bearer {token}\nBody: {name, parent_id}
+Frontend -> Backend: POST /api/folders\nCookie: access_token\nBody: {name, parent_id}
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT path FROM folders\nWHERE id = parent_id
 DB --> Backend: 返回父文件夹路径
@@ -532,7 +541,7 @@ Frontend --> User: 刷新文件夹树\n显示新文件夹
 User -> Frontend: 右键点击文件夹\n选择"重命名"
 Frontend -> Frontend: 弹出输入框\n显示当前名称
 User -> Frontend: 输入新名称
-Frontend -> Backend: PUT /api/folders/{folder_id}\nHeader: Authorization: Bearer {token}\nBody: {name}
+Frontend -> Backend: PUT /api/folders/{folder_id}\nCookie: access_token\nBody: {name}
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM folders\nWHERE id = ? AND user_id = ?
 DB --> Backend: 返回文件夹信息
@@ -562,7 +571,7 @@ end
 User -> Frontend: 右键点击文件夹\n选择"删除"
 Frontend -> Frontend: 弹出确认对话框
 User -> Frontend: 确认删除
-Frontend -> Backend: DELETE /api/folders/{folder_id}\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: DELETE /api/folders/{folder_id}\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM folders\nWHERE id = ? AND user_id = ?
 DB --> Backend: 返回文件夹信息
@@ -570,28 +579,15 @@ DB --> Backend: 返回文件夹信息
 alt 文件夹存在且有权限
     Backend -> DB: 开启事务
 
-    note right of Backend
-        由于设置了外键级联删除
-        (ON DELETE CASCADE)
-        删除文件夹会自动删除：
-        1. 所有子文件夹
-        2. 文件夹内的所有文件记录
-    end note
+    Backend -> DB: UPDATE folders\nSET deleted_at = NOW()\nWHERE id = ? OR path LIKE 'folder_path/%'
+    Backend -> DB: UPDATE files\nSET deleted_at = NOW()\nWHERE folder_id IN\n(SELECT id FROM folders WHERE path LIKE 'folder_path/%')
 
-    Backend -> DB: SELECT file_path, thumbnail_path\nFROM files\nWHERE folder_id = ? OR folder_id IN\n(SELECT id FROM folders WHERE path LIKE 'folder_path/%')
-    DB --> Backend: 返回所有文件路径
+    Backend -> DB: INSERT INTO recycle_bin\n(user_id, original_id, original_type,\noriginal_name, original_path, original_full_path,\nexpires_at, metadata)\nVALUES (?, ?, 'folder', ?, ?, ?,\nNOW() + INTERVAL 30 DAY, ?)
 
-    loop 删除所有物理文件
-        Backend -> FileSystem: 删除文件
-        Backend -> FileSystem: 删除缩略图（如果存在）
-    end
-
-    Backend -> DB: DELETE FROM folders\nWHERE id = ?
-    DB --> Backend: 删除成功（级联删除子文件夹和文件记录）
-
-    Backend -> DB: 提交事务
+    Backend -> DB: COMMIT
+    DB --> Backend: 删除成功（软删除）
     Backend --> Frontend: 返回成功信息
-    Frontend --> User: 刷新文件夹树\n移除已删除文件夹
+    Frontend --> User: 刷新文件夹树\n显示“已移至回收站”
 else 无权限或不存在
     Backend -> DB: 回滚事务
     Backend --> Frontend: 返回403或404错误
@@ -647,7 +643,7 @@ participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
 
 User -> Frontend: 选择文件\n点击"移动"按钮
 Frontend -> Frontend: 弹出文件夹选择对话框
-Frontend -> Backend: GET /api/folders\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/folders\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM folders\nWHERE user_id = ?\nORDER BY path
 DB --> Backend: 返回用户的所有文件夹
@@ -655,7 +651,7 @@ Backend --> Frontend: 返回文件夹列表
 Frontend --> User: 显示文件夹树供选择
 
 User -> Frontend: 选择目标文件夹
-Frontend -> Backend: PUT /api/files/{file_id}/move\nHeader: Authorization: Bearer {token}\nBody: {target_folder_id}
+Frontend -> Backend: PUT /api/files/{file_id}/move\nCookie: access_token\nBody: {target_folder_id}
 Backend -> Backend: JWT验证，提取user_id
 
 Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?
@@ -681,7 +677,7 @@ User -> Frontend: 点击删除文件按钮
 Frontend -> Frontend: 弹出确认对话框
 User -> Frontend: 确认删除
 
-Frontend -> Backend: DELETE /api/files/{file_id}\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: DELETE /api/files/{file_id}\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?\nAND deleted_at IS NULL
 DB --> Backend: 返回文件信息
@@ -693,7 +689,7 @@ alt 文件存在且有权限
     Backend -> DB: UPDATE files\nSET deleted_at = NOW(),\ndeleted_by = ?\nWHERE id = ?
 
     ' 写入回收站记录
-    Backend -> DB: INSERT INTO recycle_bin\n(user_id, original_id, original_type,\noriginal_name, original_path,\noriginal_folder_id, file_size,\nexpires_at, metadata)\nVALUES (?, ?, 'file', ?, ?, ?, ?,\nNOW() + INTERVAL 30 DAY, ?)
+    Backend -> DB: INSERT INTO recycle_bin\n(user_id, original_id, original_type,\noriginal_name, original_path, original_full_path,\noriginal_folder_id, file_object_id, file_size,\nexpires_at, metadata)\nVALUES (?, ?, 'file', ?, ?, ?, ?, ?, ?,\nNOW() + INTERVAL 30 DAY, ?)
 
     Backend -> DB: COMMIT
     DB --> Backend: 删除成功
@@ -706,7 +702,7 @@ end
 
 ' 查看回收站
 User -> Frontend: 进入回收站页面
-Frontend -> Backend: GET /api/recycle-bin?page=1&page_size=20\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/recycle-bin?page=1&page_size=20\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM recycle_bin\nWHERE user_id = ?\nORDER BY deleted_at DESC\nLIMIT 20 OFFSET 0
 DB --> Backend: 返回回收站列表
@@ -715,13 +711,18 @@ Frontend --> User: 显示回收站列表\n(文件名、删除时间、过期时�
 
 ' 恢复文件
 User -> Frontend: 点击恢复按钮
-Frontend -> Backend: POST /api/recycle-bin/{id}/restore\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: POST /api/recycle-bin/{id}/restore\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM recycle_bin\nWHERE id = ? AND user_id = ?
 DB --> Backend: 返回回收站记录
 
 alt 记录存在且有权限
     Backend -> DB: BEGIN TRANSACTION
+
+    Backend -> Backend: 检查目标路径是否冲突
+    alt 存在同名冲突
+        Backend -> Backend: 自动改名追加 (restored)
+    end
 
     ' 恢复文件记录
     Backend -> DB: UPDATE files\nSET deleted_at = NULL,\ndeleted_by = NULL\nWHERE id = ?\nAND user_id = ?
@@ -743,7 +744,7 @@ User -> Frontend: 点击永久删除按钮
 Frontend -> Frontend: 弹出二次确认对话框
 User -> Frontend: 确认永久删除
 
-Frontend -> Backend: DELETE /api/recycle-bin/{id}\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: DELETE /api/recycle-bin/{id}\nCookie: access_token
 Backend -> Backend: JWT验证，提取user_id
 Backend -> DB: SELECT * FROM recycle_bin\nWHERE id = ? AND user_id = ?
 DB --> Backend: 返回回收站记录
@@ -751,12 +752,21 @@ DB --> Backend: 返回回收站记录
 alt 记录存在且有权限
     Backend -> DB: BEGIN TRANSACTION
 
+    ' 删除逻辑文件记录
+    Backend -> DB: DELETE FROM files\nWHERE id = ?
+
     ' 删除回收站记录
     Backend -> DB: DELETE FROM recycle_bin\nWHERE id = ?
 
-    ' 删除物理文件
-    Backend -> FileSystem: 删除文件\nDELETE {file_path}
-    FileSystem --> Backend: 删除成功
+    ' 引用计数 -1
+    Backend -> DB: UPDATE file_objects\nSET ref_count = ref_count - 1\nWHERE id = ?
+
+    alt ref_count == 0
+        Backend -> FileSystem: 删除文件\nDELETE {file_path}
+        Backend -> FileSystem: 删除缩略图（如果存在）
+        FileSystem --> Backend: 删除成功
+        Backend -> DB: DELETE FROM file_objects\nWHERE id = ?
+    end
 
     ' 更新用户存储配额
     Backend -> DB: UPDATE users\nSET storage_used = storage_used - ?\nWHERE id = ?
@@ -798,8 +808,15 @@ Backend -> DB: SELECT * FROM recycle_bin\nWHERE expires_at < NOW()
 DB --> Backend: 返回过期记录列表
 
 loop 对每个过期记录
-    Backend -> FileSystem: 删除物理文件\nDELETE {file_path}
-    FileSystem --> Backend: 删除成功
+    Backend -> DB: DELETE FROM files\nWHERE id = ?
+    Backend -> DB: UPDATE file_objects\nSET ref_count = ref_count - 1\nWHERE id = ?
+
+    alt ref_count == 0
+        Backend -> FileSystem: 删除物理文件\nDELETE {file_path}
+        Backend -> FileSystem: 删除缩略图（如果存在）
+        FileSystem --> Backend: 删除成功
+        Backend -> DB: DELETE FROM file_objects\nWHERE id = ?
+    end
 
     Backend -> DB: UPDATE users\nSET storage_used = storage_used - ?\nWHERE id = ?
     DB --> Backend: 更新成功
@@ -811,3 +828,4 @@ end
 Backend -> Backend: 记录清理日志\n(清理数量、释放空间)
 
 @enduml
+

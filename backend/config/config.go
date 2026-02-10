@@ -12,10 +12,13 @@ type Config struct {
 	Storage    StorageConfig    `yaml:"storage"`
 	Redis      RedisConfig      `yaml:"redis"`
 	JWT        JWTConfig        `yaml:"jwt"`
+	AuthCookie AuthCookieConfig `yaml:"auth_cookie"`
+	CSRF       CSRFConfig       `yaml:"csrf"`
 	Thumbnail  ThumbnailConfig  `yaml:"thumbnail"`
 	RecycleBin RecycleBinConfig `yaml:"recycle_bin"`
 	Pagination PaginationConfig `yaml:"pagination"`
 	Audit      AuditConfig      `yaml:"audit"`
+	Health     HealthCheckConfig `yaml:"health_check"`
 }
 
 type ServerConfig struct {
@@ -54,8 +57,24 @@ type RedisConfig struct {
 }
 
 type JWTConfig struct {
-	Secret      string `yaml:"secret"`
-	ExpireHours int    `yaml:"expire_hours"`
+	Secret             string `yaml:"secret"`
+	ExpireHours        int    `yaml:"expire_hours"`
+	RefreshExpireHours int    `yaml:"refresh_expire_hours"`
+}
+
+type AuthCookieConfig struct {
+	AccessName string `yaml:"access_name"`
+	RefreshName string `yaml:"refresh_name"`
+	HttpOnly   bool   `yaml:"http_only"`
+	SameSite   string `yaml:"same_site"`
+	Secure     bool   `yaml:"secure"`
+	Path       string `yaml:"path"`
+}
+
+type CSRFConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	HeaderName string `yaml:"header_name"`
+	CookieName string `yaml:"cookie_name"`
 }
 
 type ThumbnailConfig struct {
@@ -87,6 +106,12 @@ type AuditConfig struct {
 	RetentionDays int      `yaml:"retention_days"`
 }
 
+type HealthCheckConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Endpoint  string `yaml:"endpoint"`
+	TimeoutMs int    `yaml:"timeout_ms"`
+}
+
 var AppConfig *Config
 
 func LoadConfig(path string) (*Config, error) {
@@ -100,6 +125,33 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	applyDefaults(&cfg)
+
 	AppConfig = &cfg
 	return &cfg, nil
+}
+
+func applyDefaults(cfg *Config) {
+	if cfg.AuthCookie.AccessName == "" {
+		cfg.AuthCookie.AccessName = "access_token"
+	}
+	if cfg.AuthCookie.RefreshName == "" {
+		cfg.AuthCookie.RefreshName = "refresh_token"
+	}
+	if cfg.AuthCookie.Path == "" {
+		cfg.AuthCookie.Path = "/"
+	}
+	if cfg.CSRF.HeaderName == "" {
+		cfg.CSRF.HeaderName = "X-CSRF-Token"
+	}
+	if cfg.CSRF.CookieName == "" {
+		cfg.CSRF.CookieName = "csrf_token"
+	}
+	if cfg.JWT.RefreshExpireHours == 0 {
+		if cfg.JWT.ExpireHours > 0 {
+			cfg.JWT.RefreshExpireHours = cfg.JWT.ExpireHours * 4
+		} else {
+			cfg.JWT.RefreshExpireHours = 168
+		}
+	}
 }
