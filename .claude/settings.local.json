@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(test:*)",
+      "Bash(go mod init:*)",
+      "Bash(go mod tidy:*)"
+    ]
+  }
+}

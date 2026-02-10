@@ -158,7 +158,17 @@ Frontend -> Frontend: 将文件分片\n(每片5MB)
 
 Frontend -> Backend: POST /api/files/upload/init\nHeader: Authorization: Bearer {token}\nBody: {file_name, file_size, file_md5,\ntotal_chunks, folder_id}
 Backend -> Backend: JWT验证，提取user_id
-Backend -> DB: 检查是否存在相同MD5的文件\n(秒传功能)
+
+' 配额检查
+Backend -> DB: SELECT storage_quota, storage_used\nFROM users WHERE id = ?
+DB --> Backend: 返回配额信息
+Backend -> Backend: 检查配额：\nstorage_used + file_size <= storage_quota
+
+alt 配额不足
+    Backend --> Frontend: 返回400错误\n{message: "存储空间不足",\nstorage_quota, storage_used,\navailable_space, required_space}
+    Frontend --> User: 显示配额不足提示
+else 配额充足
+    Backend -> DB: 检查用户范围内是否存在相同MD5\nSELECT * FROM files\nWHERE user_id = ? AND file_md5 = ?\nAND deleted_at IS NULL
 
 alt 文件已存在（秒传）
     Backend -> DB: 复制文件记录\n关联到当前用户
@@ -209,6 +219,7 @@ else 文件不存在，需要上传
     Backend -> Redis: 删除上传任务信息
     Backend --> Frontend: 返回文件信息
     Frontend --> User: 显示上传完成
+end
 end
 
 == <b><size:14>断点续传 (网络中断后恢复)</size></b> ==
@@ -416,11 +427,11 @@ participant "  数据库  \n<size:11>(MySQL)</size>" as DB <<database>>
 == <b><size:14>文件列表加载 (显示缩略图)</size></b> ==
 
 User -> Frontend: 进入文件夹
-Frontend -> Backend: GET /api/files?folder_id={folder_id}\nHeader: Authorization: Bearer {token}
+Frontend -> Backend: GET /api/files?folder_id={folder_id}\n&page=1&page_size=20\n&sort_by=created_at&order=desc\nHeader: Authorization: Bearer {token}
 Backend -> Backend: JWT验证，提取user_id
-Backend -> DB: SELECT * FROM files\nWHERE folder_id = ? AND user_id = ?\nORDER BY created_at DESC
-DB --> Backend: 返回文件列表
-Backend --> Frontend: 返回文件信息\n[{id, name, is_image, thumbnail_url}]
+Backend -> DB: SELECT * FROM files\nWHERE folder_id = ? AND user_id = ?\nAND deleted_at IS NULL\nORDER BY created_at DESC\nLIMIT 20 OFFSET 0
+DB --> Backend: 返回文件列表和分页信息
+Backend --> Frontend: 返回文件信息和分页数据\n{files: [{id, name, is_image, thumbnail_url}],\npagination: {page, page_size, total, has_next}}
 
 loop 对每个图片文件
     Frontend -> Backend: GET /api/files/{file_id}/thumbnail
@@ -662,5 +673,141 @@ else 文件或文件夹不存在或无权限
     Backend --> Frontend: 返回403或404错误
     Frontend --> User: 显示错误提示
 end
+
+== <b><size:14>软删除和回收站</size></b> ==
+
+' 软删除文件
+User -> Frontend: 点击删除文件按钮
+Frontend -> Frontend: 弹出确认对话框
+User -> Frontend: 确认删除
+
+Frontend -> Backend: DELETE /api/files/{file_id}\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM files\nWHERE id = ? AND user_id = ?\nAND deleted_at IS NULL
+DB --> Backend: 返回文件信息
+
+alt 文件存在且有权限
+    Backend -> DB: BEGIN TRANSACTION
+
+    ' 软删除文件
+    Backend -> DB: UPDATE files\nSET deleted_at = NOW(),\ndeleted_by = ?\nWHERE id = ?
+
+    ' 写入回收站记录
+    Backend -> DB: INSERT INTO recycle_bin\n(user_id, original_id, original_type,\noriginal_name, original_path,\noriginal_folder_id, file_size,\nexpires_at, metadata)\nVALUES (?, ?, 'file', ?, ?, ?, ?,\nNOW() + INTERVAL 30 DAY, ?)
+
+    Backend -> DB: COMMIT
+    DB --> Backend: 删除成功
+    Backend --> Frontend: 返回成功信息
+    Frontend --> User: 显示"已移至回收站"提示
+else 文件不存在或无权限
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+' 查看回收站
+User -> Frontend: 进入回收站页面
+Frontend -> Backend: GET /api/recycle-bin?page=1&page_size=20\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM recycle_bin\nWHERE user_id = ?\nORDER BY deleted_at DESC\nLIMIT 20 OFFSET 0
+DB --> Backend: 返回回收站列表
+Backend --> Frontend: 返回回收站数据\n{items: [{id, original_name,\noriginal_type, file_size,\ndeleted_at, expires_at}],\npagination: {page, total, has_next}}
+Frontend --> User: 显示回收站列表\n(文件名、删除时间、过期时间)
+
+' 恢复文件
+User -> Frontend: 点击恢复按钮
+Frontend -> Backend: POST /api/recycle-bin/{id}/restore\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM recycle_bin\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回回收站记录
+
+alt 记录存在且有权限
+    Backend -> DB: BEGIN TRANSACTION
+
+    ' 恢复文件记录
+    Backend -> DB: UPDATE files\nSET deleted_at = NULL,\ndeleted_by = NULL\nWHERE id = ?\nAND user_id = ?
+
+    ' 删除回收站记录
+    Backend -> DB: DELETE FROM recycle_bin\nWHERE id = ?
+
+    Backend -> DB: COMMIT
+    DB --> Backend: 恢复成功
+    Backend --> Frontend: 返回成功信息
+    Frontend --> User: 显示"恢复成功"提示
+else 记录不存在或无权限
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+' 永久删除
+User -> Frontend: 点击永久删除按钮
+Frontend -> Frontend: 弹出二次确认对话框
+User -> Frontend: 确认永久删除
+
+Frontend -> Backend: DELETE /api/recycle-bin/{id}\nHeader: Authorization: Bearer {token}
+Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: SELECT * FROM recycle_bin\nWHERE id = ? AND user_id = ?
+DB --> Backend: 返回回收站记录
+
+alt 记录存在且有权限
+    Backend -> DB: BEGIN TRANSACTION
+
+    ' 删除回收站记录
+    Backend -> DB: DELETE FROM recycle_bin\nWHERE id = ?
+
+    ' 删除物理文件
+    Backend -> FileSystem: 删除文件\nDELETE {file_path}
+    FileSystem --> Backend: 删除成功
+
+    ' 更新用户存储配额
+    Backend -> DB: UPDATE users\nSET storage_used = storage_used - ?\nWHERE id = ?
+
+    Backend -> DB: COMMIT
+    DB --> Backend: 删除成功
+    Backend --> Frontend: 返回成功信息
+    Frontend --> User: 显示"永久删除成功"提示
+else 记录不存在或无权限
+    Backend --> Frontend: 返回403或404错误
+    Frontend --> User: 显示错误提示
+end
+
+== <b><size:14>定时任务 - 临时文件清理</size></b> ==
+
+' 清理过期上传任务
+participant "  定时任务  \n<size:11>(Cron)</size>" as Cron <<scheduler>>
+
+Cron -> Backend: 每小时执行一次\n清理过期上传任务
+Backend -> DB: SELECT * FROM upload_tasks\nWHERE expires_at < NOW()\nAND status != 'completed'
+DB --> Backend: 返回过期任务列表
+
+loop 对每个过期任务
+    Backend -> FileSystem: 删除临时分片文件\nDELETE {temp_dir}/*
+    FileSystem --> Backend: 删除成功
+
+    Backend -> Redis: 删除上传任务信息\nDEL upload:{upload_id}:*
+    Redis --> Backend: 删除成功
+
+    Backend -> DB: DELETE FROM upload_tasks\nWHERE id = ?
+    DB --> Backend: 删除成功
+end
+
+Backend -> Backend: 记录清理日志\n(清理数量、释放空间)
+
+' 清理过期回收站
+Cron -> Backend: 每天执行一次\n清理过期回收站
+Backend -> DB: SELECT * FROM recycle_bin\nWHERE expires_at < NOW()
+DB --> Backend: 返回过期记录列表
+
+loop 对每个过期记录
+    Backend -> FileSystem: 删除物理文件\nDELETE {file_path}
+    FileSystem --> Backend: 删除成功
+
+    Backend -> DB: UPDATE users\nSET storage_used = storage_used - ?\nWHERE id = ?
+    DB --> Backend: 更新成功
+
+    Backend -> DB: DELETE FROM recycle_bin\nWHERE id = ?
+    DB --> Backend: 删除成功
+end
+
+Backend -> Backend: 记录清理日志\n(清理数量、释放空间)
 
 @enduml
