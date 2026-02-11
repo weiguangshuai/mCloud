@@ -3,7 +3,10 @@
     "allow": [
       "Bash(test:*)",
       "Bash(go mod init:*)",
-      "Bash(go mod tidy:*)"
+      "Bash(go mod tidy:*)",
+      "Bash(del:*)",
+      "Bash(go build ./...)",
+      "Bash(npx vite build:*)"
     ]
   }
 }

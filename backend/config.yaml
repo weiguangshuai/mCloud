@@ -67,11 +67,6 @@ pagination:
   default_sort_by: "created_at"        # 默认排序字段
   default_order: "desc"                # 默认排序方向
 
-audit:
-  enabled: true                        # 是否启用审计日志
-  log_actions: ["download", "preview", "view", "thumbnail"]
-  retention_days: 90                   # 日志保留天数
-
 health_check:
   enabled: true                        # 是否启用健康检查
   endpoint: "/api/health"              # 健康检查端点

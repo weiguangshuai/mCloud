@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,15 +65,42 @@ func RestoreItem(c *gin.Context) {
 	}
 
 	if item.OriginalType == "file" {
+		// 检查同名冲突
+		var count int64
+		folderID := uint(0)
+		if item.OriginalFolderID != nil {
+			folderID = *item.OriginalFolderID
+		}
+		database.DB.Model(&models.File{}).
+			Where("user_id = ? AND folder_id = ? AND original_name = ?", userID, folderID, item.OriginalName).
+			Count(&count)
+
 		// 恢复文件（取消软删除）
+		updates := map[string]interface{}{"deleted_at": nil}
+		if count > 0 {
+			newName := fmt.Sprintf("%s(restored)", item.OriginalName)
+			updates["original_name"] = newName
+		}
 		database.DB.Unscoped().Model(&models.File{}).
 			Where("id = ?", item.OriginalID).
-			Updates(map[string]interface{}{"deleted_at": nil})
+			Updates(updates)
 	} else {
-		// 恢复文件夹
+		// 检查同名文件夹冲突
+		var count int64
+		var originalFolder models.Folder
+		database.DB.Unscoped().First(&originalFolder, item.OriginalID)
+		parentID := originalFolder.ParentID
+		database.DB.Model(&models.Folder{}).
+			Where("user_id = ? AND parent_id = ? AND name = ?", userID, parentID, item.OriginalName).
+			Count(&count)
+
+		updates := map[string]interface{}{"deleted_at": nil}
+		if count > 0 {
+			updates["name"] = fmt.Sprintf("%s(restored)", item.OriginalName)
+		}
 		database.DB.Unscoped().Model(&models.Folder{}).
 			Where("id = ?", item.OriginalID).
-			Updates(map[string]interface{}{"deleted_at": nil})
+			Updates(updates)
 	}
 
 	database.DB.Delete(&item)
@@ -91,24 +119,45 @@ func PermanentDelete(c *gin.Context) {
 	}
 
 	if item.OriginalType == "file" {
-		// 删除物理文件
-		absPath := filepath.Join(config.AppConfig.Storage.BasePath, item.OriginalPath)
-		os.Remove(absPath)
-
-		// 永久删除数据库记录
-		database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.File{})
-
-		// 更新存储配额
-		if item.FileSize != nil {
-			database.DB.Model(&models.User{}).Where("id = ?", userID).
-				UpdateColumn("storage_used", database.DB.Raw("storage_used - ?", *item.FileSize))
-		}
+		permanentDeleteFile(&item, userID)
 	} else {
 		database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.Folder{})
 	}
 
 	database.DB.Delete(&item)
 	utils.SuccessWithMessage(c, "永久删除成功", nil)
+}
+
+// permanentDeleteFile 永久删除文件，处理 FileObject ref_count
+func permanentDeleteFile(item *models.RecycleBinItem, userID uint) {
+	// 永久删除逻辑文件记录
+	database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.File{})
+
+	// 更新存储配额
+	if item.FileSize != nil {
+		database.DB.Model(&models.User{}).Where("id = ?", userID).
+			UpdateColumn("storage_used", database.DB.Raw("GREATEST(storage_used - ?, 0)", *item.FileSize))
+	}
+
+	// 递减 FileObject ref_count，归零则删除物理文件
+	if item.FileObjectID != nil {
+		var fileObj models.FileObject
+		if err := database.DB.First(&fileObj, *item.FileObjectID).Error; err == nil {
+			newRefCount := fileObj.RefCount - 1
+			if newRefCount <= 0 {
+				// 删除物理文件和缩略图
+				absPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.FilePath)
+				os.Remove(absPath)
+				if fileObj.ThumbnailPath != "" {
+					thumbPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.ThumbnailPath)
+					os.Remove(thumbPath)
+				}
+				database.DB.Delete(&fileObj)
+			} else {
+				database.DB.Model(&fileObj).Update("ref_count", newRefCount)
+			}
+		}
+	}
 }
 
 // EmptyRecycleBin 清空回收站
@@ -120,13 +169,7 @@ func EmptyRecycleBin(c *gin.Context) {
 
 	for _, item := range items {
 		if item.OriginalType == "file" {
-			absPath := filepath.Join(config.AppConfig.Storage.BasePath, item.OriginalPath)
-			os.Remove(absPath)
-			database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.File{})
-			if item.FileSize != nil {
-				database.DB.Model(&models.User{}).Where("id = ?", userID).
-					UpdateColumn("storage_used", database.DB.Raw("storage_used - ?", *item.FileSize))
-			}
+			permanentDeleteFile(&item, userID)
 		} else {
 			database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.Folder{})
 		}

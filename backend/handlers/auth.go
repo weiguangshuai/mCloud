@@ -55,6 +55,16 @@ func Register(c *gin.Context) {
 		return
 	}
 
+	// 创建用户根目录
+	isRoot := true
+	rootFolder := models.Folder{
+		Name:   "root",
+		UserID: user.ID,
+		IsRoot: &isRoot,
+		Path:   "/",
+	}
+	database.DB.Create(&rootFolder)
+
 	utils.Success(c, gin.H{
 		"id":       user.ID,
 		"username": user.Username,

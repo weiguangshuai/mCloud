@@ -51,6 +51,10 @@ export function deleteFile(id) {
   return request.delete(`/files/${id}`)
 }
 
+export function renameFile(id, name) {
+  return request.put(`/files/${id}/rename`, { name })
+}
+
 export function moveFile(id, folderId) {
   return request.put(`/files/${id}/move`, { folder_id: folderId })
 }

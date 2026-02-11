@@ -17,7 +17,6 @@ type Config struct {
 	Thumbnail  ThumbnailConfig  `yaml:"thumbnail"`
 	RecycleBin RecycleBinConfig `yaml:"recycle_bin"`
 	Pagination PaginationConfig `yaml:"pagination"`
-	Audit      AuditConfig      `yaml:"audit"`
 	Health     HealthCheckConfig `yaml:"health_check"`
 }
 
@@ -98,12 +97,6 @@ type PaginationConfig struct {
 	MaxPageSize     int    `yaml:"max_page_size"`
 	DefaultSortBy   string `yaml:"default_sort_by"`
 	DefaultOrder    string `yaml:"default_order"`
-}
-
-type AuditConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	LogActions    []string `yaml:"log_actions"`
-	RetentionDays int      `yaml:"retention_days"`
 }
 
 type HealthCheckConfig struct {

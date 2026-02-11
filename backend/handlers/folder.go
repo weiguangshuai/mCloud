@@ -46,6 +46,7 @@ func CreateFolder(c *gin.Context) {
 
 	// 计算路径
 	path := "/" + req.Name
+	var parentIDPtr *uint
 	if req.ParentID > 0 {
 		var parent models.Folder
 		if err := database.DB.Where("id = ? AND user_id = ?", req.ParentID, userID).First(&parent).Error; err != nil {
@@ -53,6 +54,7 @@ func CreateFolder(c *gin.Context) {
 			return
 		}
 		path = parent.Path + "/" + req.Name
+		parentIDPtr = &req.ParentID
 	}
 
 	// 检查同名文件夹
@@ -67,7 +69,7 @@ func CreateFolder(c *gin.Context) {
 
 	folder := models.Folder{
 		Name:     req.Name,
-		ParentID: req.ParentID,
+		ParentID: parentIDPtr,
 		UserID:   userID,
 		Path:     path,
 	}
@@ -103,9 +105,9 @@ func RenameFolder(c *gin.Context) {
 	oldPath := folder.Path
 	// 计算新路径
 	newPath := "/" + req.Name
-	if folder.ParentID > 0 {
+	if folder.ParentID != nil && *folder.ParentID > 0 {
 		var parent models.Folder
-		database.DB.First(&parent, folder.ParentID)
+		database.DB.First(&parent, *folder.ParentID)
 		newPath = parent.Path + "/" + req.Name
 	}
 
@@ -144,15 +146,19 @@ func DeleteFolder(c *gin.Context) {
 
 	// 写入回收站
 	if config.AppConfig.RecycleBin.Enabled {
+		parentIDVal := uint(0)
+		if folder.ParentID != nil {
+			parentIDVal = *folder.ParentID
+		}
 		recycleBinItem := models.RecycleBinItem{
 			UserID:           userID,
 			OriginalID:       folder.ID,
 			OriginalType:     "folder",
 			OriginalName:     folder.Name,
 			OriginalPath:     folder.Path,
-			OriginalFolderID: &folder.ParentID,
+			OriginalFolderID: folder.ParentID,
 			ExpiresAt:        time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
-			Metadata:         fmt.Sprintf(`{"parent_id":%d}`, folder.ParentID),
+			Metadata:         fmt.Sprintf(`{"parent_id":%d}`, parentIDVal),
 		}
 		database.DB.Create(&recycleBinItem)
 	}

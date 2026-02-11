@@ -10,6 +10,7 @@ import (
 	"mcloud/handlers"
 	"mcloud/middleware"
 	"mcloud/models"
+	"mcloud/services"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,9 +33,9 @@ func main() {
 	database.DB.AutoMigrate(
 		&models.User{},
 		&models.Folder{},
+		&models.FileObject{},
 		&models.File{},
 		&models.UploadTask{},
-		&models.FileAccessLog{},
 		&models.RecycleBinItem{},
 		&models.ThumbnailTask{},
 	)
@@ -49,6 +50,10 @@ func main() {
 	os.MkdirAll(cfg.Storage.BasePath+"/files", 0755)
 	os.MkdirAll(cfg.Storage.BasePath+"/thumbnails", 0755)
 	os.MkdirAll(cfg.Storage.BasePath+"/temp", 0755)
+
+	// 启动后台清理任务
+	services.StartCleanupWorkers()
+	log.Println("后台清理任务已启动")
 
 	// 设置路由
 	r := gin.Default()
@@ -102,6 +107,7 @@ func setupRoutes(r *gin.Engine) {
 		protected.GET("/files/:id/preview", handlers.PreviewFile)
 		protected.GET("/files/:id/thumbnail", handlers.GetThumbnail)
 		protected.DELETE("/files/:id", handlers.DeleteFile)
+		protected.PUT("/files/:id/rename", handlers.RenameFile)
 		protected.PUT("/files/:id/move", handlers.MoveFile)
 		protected.POST("/files/batch/delete", handlers.BatchDeleteFiles)
 		protected.POST("/files/batch/move", handlers.BatchMoveFiles)

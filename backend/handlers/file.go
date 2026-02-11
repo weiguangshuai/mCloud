@@ -55,7 +55,8 @@ func ListFiles(c *gin.Context) {
 		Count(&total)
 
 	var files []models.File
-	database.DB.Where("user_id = ? AND folder_id = ?", userID, uint(folderID)).
+	database.DB.Preload("FileObject").
+		Where("user_id = ? AND folder_id = ?", userID, uint(folderID)).
 		Order(sortBy + " " + order).
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
@@ -169,21 +170,31 @@ func UploadFile(c *gin.Context) {
 		mimeType = "application/octet-stream"
 	}
 
-	fileRecord := models.File{
-		Name:          storageName,
-		OriginalName:  header.Filename,
+	// 创建物理文件对象
+	fileObj := models.FileObject{
 		FilePath:      filepath.Join(relDir, storageName),
 		ThumbnailPath: thumbnailPath,
-		FolderID:      uint(folderID),
-		UserID:        userID,
 		FileSize:      header.Size,
 		MimeType:      mimeType,
 		IsImage:       isImage,
 		Width:         width,
 		Height:        height,
 		FileMD5:       fileMD5,
+		RefCount:      1,
+	}
+	if err := database.DB.Create(&fileObj).Error; err != nil {
+		utils.Error(c, http.StatusInternalServerError, "保存文件对象失败")
+		return
 	}
 
+	// 创建逻辑文件记录
+	fileRecord := models.File{
+		Name:         storageName,
+		OriginalName: header.Filename,
+		FolderID:     uint(folderID),
+		UserID:       userID,
+		FileObjectID: fileObj.ID,
+	}
 	if err := database.DB.Create(&fileRecord).Error; err != nil {
 		utils.Error(c, http.StatusInternalServerError, "保存文件记录失败")
 		return
@@ -192,6 +203,7 @@ func UploadFile(c *gin.Context) {
 	// 更新用户存储使用量
 	database.DB.Model(&user).Update("storage_used", user.StorageUsed+header.Size)
 
+	fileRecord.FileObject = fileObj
 	utils.Success(c, fileRecord)
 }
 
@@ -248,27 +260,24 @@ func InitChunkedUpload(c *gin.Context) {
 		return
 	}
 
-	// 秒传检查（用户范围内）
-	var existingFile models.File
-	if err := database.DB.Where("user_id = ? AND file_md5 = ?", userID, req.FileMD5).
-		First(&existingFile).Error; err == nil {
-		// 秒传：复制文件记录
+	// 秒传检查（用户范围内，通过 file_objects JOIN files 查询）
+	var existingFileObj models.FileObject
+	err := database.DB.
+		Joins("JOIN files ON files.file_object_id = file_objects.id").
+		Where("files.user_id = ? AND file_objects.file_md5 = ? AND files.deleted_at IS NULL", userID, req.FileMD5).
+		First(&existingFileObj).Error
+	if err == nil {
+		// 秒传：复用 FileObject，ref_count +1
+		database.DB.Model(&existingFileObj).Update("ref_count", existingFileObj.RefCount+1)
 		newFile := models.File{
-			Name:          existingFile.Name,
-			OriginalName:  req.FileName,
-			FilePath:      existingFile.FilePath,
-			ThumbnailPath: existingFile.ThumbnailPath,
-			FolderID:      req.FolderID,
-			UserID:        userID,
-			FileSize:      existingFile.FileSize,
-			MimeType:      existingFile.MimeType,
-			IsImage:       existingFile.IsImage,
-			Width:         existingFile.Width,
-			Height:        existingFile.Height,
-			FileMD5:       req.FileMD5,
+			Name:         existingFileObj.FilePath[strings.LastIndex(existingFileObj.FilePath, string(os.PathSeparator))+1:],
+			OriginalName: req.FileName,
+			FolderID:     req.FolderID,
+			UserID:       userID,
+			FileObjectID: existingFileObj.ID,
 		}
 		database.DB.Create(&newFile)
-		database.DB.Model(&user).Update("storage_used", user.StorageUsed+newFile.FileSize)
+		database.DB.Model(&user).Update("storage_used", user.StorageUsed+existingFileObj.FileSize)
 
 		utils.SuccessWithMessage(c, "秒传成功", gin.H{
 			"status":  "instant_upload",
@@ -477,19 +486,27 @@ func CompleteUpload(c *gin.Context) {
 	ext := filepath.Ext(task.FileName)
 	mimeType := getMimeType(ext)
 
-	fileRecord := models.File{
-		Name:          storageName,
-		OriginalName:  task.FileName,
+	// 创建物理文件对象
+	fileObj := models.FileObject{
 		FilePath:      filepath.Join(relDir, storageName),
 		ThumbnailPath: thumbnailPath,
-		FolderID:      task.FolderID,
-		UserID:        userID,
 		FileSize:      task.FileSize,
 		MimeType:      mimeType,
 		IsImage:       isImage,
 		Width:         width,
 		Height:        height,
 		FileMD5:       task.FileMD5,
+		RefCount:      1,
+	}
+	database.DB.Create(&fileObj)
+
+	// 创建逻辑文件记录
+	fileRecord := models.File{
+		Name:         storageName,
+		OriginalName: task.FileName,
+		FolderID:     task.FolderID,
+		UserID:       userID,
+		FileObjectID: fileObj.ID,
 	}
 	database.DB.Create(&fileRecord)
 
@@ -516,28 +533,15 @@ func DownloadFile(c *gin.Context) {
 	}
 
 	var file models.File
-	if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
+	if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
 		utils.Error(c, http.StatusNotFound, "文件不存在")
 		return
 	}
 
-	absPath := filepath.Join(config.AppConfig.Storage.BasePath, file.FilePath)
+	absPath := filepath.Join(config.AppConfig.Storage.BasePath, file.FileObject.FilePath)
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		utils.Error(c, http.StatusNotFound, "文件不存在于存储中")
 		return
-	}
-
-	// 记录审计日志
-	if config.AppConfig.Audit.Enabled {
-		accessLog := models.FileAccessLog{
-			FileID:    file.ID,
-			UserID:    userID,
-			Action:    "download",
-			IPAddress: c.ClientIP(),
-			UserAgent: c.Request.UserAgent(),
-			FileSize:  &file.FileSize,
-		}
-		database.DB.Create(&accessLog)
 	}
 
 	c.Header("Accept-Ranges", "bytes")
@@ -551,14 +555,14 @@ func DownloadFileHead(c *gin.Context) {
 	fileID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
 	var file models.File
-	if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
+	if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
 
 	c.Header("Accept-Ranges", "bytes")
-	c.Header("Content-Length", fmt.Sprintf("%d", file.FileSize))
-	c.Header("Content-Type", file.MimeType)
+	c.Header("Content-Length", fmt.Sprintf("%d", file.FileObject.FileSize))
+	c.Header("Content-Type", file.FileObject.MimeType)
 	c.Status(http.StatusOK)
 }
 
@@ -568,26 +572,18 @@ func PreviewFile(c *gin.Context) {
 	fileID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
 	var file models.File
-	if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
+	if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
 		utils.Error(c, http.StatusNotFound, "文件不存在")
 		return
 	}
 
-	absPath := filepath.Join(config.AppConfig.Storage.BasePath, file.FilePath)
+	absPath := filepath.Join(config.AppConfig.Storage.BasePath, file.FileObject.FilePath)
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		utils.Error(c, http.StatusNotFound, "文件不存在于存储中")
 		return
 	}
 
-	if config.AppConfig.Audit.Enabled {
-		accessLog := models.FileAccessLog{
-			FileID: file.ID, UserID: userID, Action: "preview",
-			IPAddress: c.ClientIP(), UserAgent: c.Request.UserAgent(),
-		}
-		database.DB.Create(&accessLog)
-	}
-
-	c.Header("Content-Type", file.MimeType)
+	c.Header("Content-Type", file.FileObject.MimeType)
 	c.File(absPath)
 }
 
@@ -597,17 +593,17 @@ func GetThumbnail(c *gin.Context) {
 	fileID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
 	var file models.File
-	if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
+	if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
 		utils.Error(c, http.StatusNotFound, "文件不存在")
 		return
 	}
 
-	if file.ThumbnailPath == "" {
+	if file.FileObject.ThumbnailPath == "" {
 		utils.Error(c, http.StatusNotFound, "缩略图不存在")
 		return
 	}
 
-	absPath := filepath.Join(config.AppConfig.Storage.BasePath, file.ThumbnailPath)
+	absPath := filepath.Join(config.AppConfig.Storage.BasePath, file.FileObject.ThumbnailPath)
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		utils.Error(c, http.StatusNotFound, "缩略图文件不存在")
 		return
@@ -624,28 +620,31 @@ func DeleteFile(c *gin.Context) {
 	fileID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 
 	var file models.File
-	if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
+	if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
 		utils.Error(c, http.StatusNotFound, "文件不存在")
 		return
 	}
 
 	if config.AppConfig.RecycleBin.Enabled {
 		metadata, _ := json.Marshal(gin.H{
-			"mime_type":      file.MimeType,
-			"thumbnail_path": file.ThumbnailPath,
-			"is_image":       file.IsImage,
-			"width":          file.Width,
-			"height":         file.Height,
-			"file_md5":       file.FileMD5,
+			"mime_type":       file.FileObject.MimeType,
+			"thumbnail_path":  file.FileObject.ThumbnailPath,
+			"is_image":        file.FileObject.IsImage,
+			"width":           file.FileObject.Width,
+			"height":          file.FileObject.Height,
+			"file_md5":        file.FileObject.FileMD5,
+			"file_object_id":  file.FileObjectID,
 		})
+		fileSize := file.FileObject.FileSize
 		item := models.RecycleBinItem{
 			UserID:           userID,
 			OriginalID:       file.ID,
 			OriginalType:     "file",
 			OriginalName:     file.OriginalName,
-			OriginalPath:     file.FilePath,
+			OriginalPath:     file.FileObject.FilePath,
 			OriginalFolderID: &file.FolderID,
-			FileSize:         &file.FileSize,
+			FileObjectID:     &file.FileObjectID,
+			FileSize:         &fileSize,
 			ExpiresAt:        time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
 			Metadata:         string(metadata),
 		}
@@ -654,6 +653,30 @@ func DeleteFile(c *gin.Context) {
 
 	database.DB.Delete(&file)
 	utils.SuccessWithMessage(c, "文件已删除", nil)
+}
+
+// RenameFile 重命名文件
+func RenameFile(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	fileID, _ := strconv.ParseUint(c.Param("id"), 10, 32)
+
+	var req struct {
+		Name string `json:"name" binding:"required,max=255"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.Error(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		return
+	}
+
+	var file models.File
+	if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err != nil {
+		utils.Error(c, http.StatusNotFound, "文件不存在")
+		return
+	}
+
+	database.DB.Model(&file).Update("original_name", req.Name)
+	file.OriginalName = req.Name
+	utils.Success(c, file)
 }
 
 // MoveFile 移动文件到其他文件夹
@@ -702,15 +725,18 @@ func BatchDeleteFiles(c *gin.Context) {
 
 	for _, fileID := range req.FileIDs {
 		var file models.File
-		if err := database.DB.Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err == nil {
+		if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err == nil {
 			if config.AppConfig.RecycleBin.Enabled {
 				metadata, _ := json.Marshal(gin.H{
-					"mime_type": file.MimeType, "is_image": file.IsImage, "file_md5": file.FileMD5,
+					"mime_type": file.FileObject.MimeType, "is_image": file.FileObject.IsImage,
+					"file_md5": file.FileObject.FileMD5, "file_object_id": file.FileObjectID,
 				})
+				fileSize := file.FileObject.FileSize
 				item := models.RecycleBinItem{
 					UserID: userID, OriginalID: file.ID, OriginalType: "file",
-					OriginalName: file.OriginalName, OriginalPath: file.FilePath,
-					OriginalFolderID: &file.FolderID, FileSize: &file.FileSize,
+					OriginalName: file.OriginalName, OriginalPath: file.FileObject.FilePath,
+					OriginalFolderID: &file.FolderID, FileObjectID: &file.FileObjectID,
+					FileSize: &fileSize,
 					ExpiresAt: time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
 					Metadata:  string(metadata),
 				}
