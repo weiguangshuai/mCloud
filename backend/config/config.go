@@ -7,16 +7,16 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	Database   DatabaseConfig   `yaml:"database"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Redis      RedisConfig      `yaml:"redis"`
-	JWT        JWTConfig        `yaml:"jwt"`
-	AuthCookie AuthCookieConfig `yaml:"auth_cookie"`
-	CSRF       CSRFConfig       `yaml:"csrf"`
-	Thumbnail  ThumbnailConfig  `yaml:"thumbnail"`
-	RecycleBin RecycleBinConfig `yaml:"recycle_bin"`
-	Pagination PaginationConfig `yaml:"pagination"`
+	Server     ServerConfig      `yaml:"server"`
+	Database   DatabaseConfig    `yaml:"database"`
+	Storage    StorageConfig     `yaml:"storage"`
+	Redis      RedisConfig       `yaml:"redis"`
+	JWT        JWTConfig         `yaml:"jwt"`
+	AuthCookie AuthCookieConfig  `yaml:"auth_cookie"`
+	CSRF       CSRFConfig        `yaml:"csrf"`
+	Thumbnail  ThumbnailConfig   `yaml:"thumbnail"`
+	RecycleBin RecycleBinConfig  `yaml:"recycle_bin"`
+	Pagination PaginationConfig  `yaml:"pagination"`
 	Health     HealthCheckConfig `yaml:"health_check"`
 }
 
@@ -62,12 +62,12 @@ type JWTConfig struct {
 }
 
 type AuthCookieConfig struct {
-	AccessName string `yaml:"access_name"`
+	AccessName  string `yaml:"access_name"`
 	RefreshName string `yaml:"refresh_name"`
-	HttpOnly   bool   `yaml:"http_only"`
-	SameSite   string `yaml:"same_site"`
-	Secure     bool   `yaml:"secure"`
-	Path       string `yaml:"path"`
+	HttpOnly    bool   `yaml:"http_only"`
+	SameSite    string `yaml:"same_site"`
+	Secure      bool   `yaml:"secure"`
+	Path        string `yaml:"path"`
 }
 
 type CSRFConfig struct {

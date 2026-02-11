@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -23,7 +24,30 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
+
+func validateFolderOwnership(userID uint, folderID uint) error {
+	if folderID == 0 {
+		return nil
+	}
+
+	var folder models.Folder
+	return database.DB.Where("id = ? AND user_id = ?", folderID, userID).First(&folder).Error
+}
+
+func respondFolderValidationError(c *gin.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		utils.Error(c, http.StatusNotFound, "目标文件夹不存在")
+	} else {
+		utils.Error(c, http.StatusInternalServerError, "校验目标文件夹失败")
+	}
+	return true
+}
 
 // ListFiles 获取文件列表（支持分页）
 func ListFiles(c *gin.Context) {
@@ -101,10 +125,10 @@ func UploadFile(c *gin.Context) {
 	database.DB.First(&user, userID)
 	if user.StorageUsed+header.Size > user.StorageQuota {
 		utils.ErrorWithData(c, http.StatusBadRequest, "存储空间不足", gin.H{
-			"storage_quota":  user.StorageQuota,
-			"storage_used":   user.StorageUsed,
+			"storage_quota":   user.StorageQuota,
+			"storage_used":    user.StorageUsed,
 			"available_space": user.StorageQuota - user.StorageUsed,
-			"required_space": header.Size,
+			"required_space":  header.Size,
 		})
 		return
 	}
@@ -244,6 +268,9 @@ func InitChunkedUpload(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.Error(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		return
+	}
+	if respondFolderValidationError(c, validateFolderOwnership(userID, req.FolderID)) {
 		return
 	}
 
@@ -416,6 +443,9 @@ func CompleteUpload(c *gin.Context) {
 	var task models.UploadTask
 	if err := database.DB.Where("upload_id = ? AND user_id = ?", req.UploadID, userID).First(&task).Error; err != nil {
 		utils.Error(c, http.StatusNotFound, "上传任务不存在")
+		return
+	}
+	if respondFolderValidationError(c, validateFolderOwnership(userID, task.FolderID)) {
 		return
 	}
 
@@ -627,13 +657,13 @@ func DeleteFile(c *gin.Context) {
 
 	if config.AppConfig.RecycleBin.Enabled {
 		metadata, _ := json.Marshal(gin.H{
-			"mime_type":       file.FileObject.MimeType,
-			"thumbnail_path":  file.FileObject.ThumbnailPath,
-			"is_image":        file.FileObject.IsImage,
-			"width":           file.FileObject.Width,
-			"height":          file.FileObject.Height,
-			"file_md5":        file.FileObject.FileMD5,
-			"file_object_id":  file.FileObjectID,
+			"mime_type":      file.FileObject.MimeType,
+			"thumbnail_path": file.FileObject.ThumbnailPath,
+			"is_image":       file.FileObject.IsImage,
+			"width":          file.FileObject.Width,
+			"height":         file.FileObject.Height,
+			"file_md5":       file.FileObject.FileMD5,
+			"file_object_id": file.FileObjectID,
 		})
 		fileSize := file.FileObject.FileSize
 		item := models.RecycleBinItem{
@@ -736,7 +766,7 @@ func BatchDeleteFiles(c *gin.Context) {
 					UserID: userID, OriginalID: file.ID, OriginalType: "file",
 					OriginalName: file.OriginalName, OriginalPath: file.FileObject.FilePath,
 					OriginalFolderID: &file.FolderID, FileObjectID: &file.FileObjectID,
-					FileSize: &fileSize,
+					FileSize:  &fileSize,
 					ExpiresAt: time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
 					Metadata:  string(metadata),
 				}
