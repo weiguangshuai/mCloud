@@ -3,9 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"mcloud/config"
-	"mcloud/database"
-	"mcloud/models"
+	"mcloud/services"
 	"mcloud/utils"
 
 	"github.com/gin-gonic/gin"
@@ -25,110 +23,52 @@ type LoginRequest struct {
 func Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.Error(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		utils.Error(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
 
-	// 检查用户名是否已存在
-	var count int64
-	database.DB.Model(&models.User{}).Where("username = ?", req.Username).Count(&count)
-	if count > 0 {
-		utils.Error(c, http.StatusBadRequest, "用户名已存在")
+	result, err := getServices().Auth.Register(c.Request.Context(), services.RegisterInput{
+		Username: req.Username,
+		Password: req.Password,
+		Nickname: req.Nickname,
+	})
+	if respondServiceError(c, err) {
 		return
 	}
-
-	hashedPassword, err := utils.HashPassword(req.Password)
-	if err != nil {
-		utils.Error(c, http.StatusInternalServerError, "密码加密失败")
-		return
-	}
-
-	user := models.User{
-		Username:     req.Username,
-		Password:     hashedPassword,
-		Nickname:     req.Nickname,
-		StorageQuota: config.AppConfig.Storage.DefaultUserQuota,
-	}
-
-	if err := database.DB.Create(&user).Error; err != nil {
-		utils.Error(c, http.StatusInternalServerError, "创建用户失败")
-		return
-	}
-
-	// 创建用户根目录
-	isRoot := true
-	rootFolder := models.Folder{
-		Name:   "root",
-		UserID: user.ID,
-		IsRoot: &isRoot,
-		Path:   "/",
-	}
-	database.DB.Create(&rootFolder)
 
 	utils.Success(c, gin.H{
-		"id":       user.ID,
-		"username": user.Username,
-		"nickname": user.Nickname,
+		"id":       result.ID,
+		"username": result.Username,
+		"nickname": result.Nickname,
 	})
 }
 
 func Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		utils.Error(c, http.StatusBadRequest, "参数错误: "+err.Error())
+		utils.Error(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
 
-	var user models.User
-	if err := database.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
-		utils.Error(c, http.StatusUnauthorized, "用户名或密码错误")
-		return
-	}
-
-	if !utils.CheckPassword(req.Password, user.Password) {
-		utils.Error(c, http.StatusUnauthorized, "用户名或密码错误")
-		return
-	}
-
-	token, err := utils.GenerateToken(user.ID)
-	if err != nil {
-		utils.Error(c, http.StatusInternalServerError, "生成令牌失败")
+	result, err := getServices().Auth.Login(c.Request.Context(), services.LoginInput{
+		Username: req.Username,
+		Password: req.Password,
+	})
+	if respondServiceError(c, err) {
 		return
 	}
 
 	utils.Success(c, gin.H{
-		"token": token,
-		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"nickname": user.Nickname,
-		},
+		"token": result.Token,
+		"user":  result.User,
 	})
 }
 
 func GetProfile(c *gin.Context) {
 	userID := c.GetUint("user_id")
-
-	var user models.User
-	if err := database.DB.First(&user, userID).Error; err != nil {
-		utils.Error(c, http.StatusNotFound, "用户不存在")
+	profile, err := getServices().Auth.GetProfile(c.Request.Context(), userID)
+	if respondServiceError(c, err) {
 		return
 	}
-
-	rootFolder, err := getOrCreateUserRootFolder(user.ID)
-	if err != nil {
-		utils.Error(c, http.StatusInternalServerError, "获取用户根目录失败")
-		return
-	}
-
-	utils.Success(c, gin.H{
-		"id":             user.ID,
-		"username":       user.Username,
-		"nickname":       user.Nickname,
-		"avatar":         user.Avatar,
-		"storage_quota":  user.StorageQuota,
-		"storage_used":   user.StorageUsed,
-		"root_folder_id": rootFolder.ID,
-		"created_at":     user.CreatedAt,
-	})
+	utils.Success(c, profile)
 }

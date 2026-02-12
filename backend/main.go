@@ -1,37 +1,34 @@
-// mCloud 私人网盘系统入口。
-// 负责加载配置、初始化数据库/Redis、执行表迁移、启动后台清理任务并注册路由。
 package main
 
 import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"mcloud/config"
 	"mcloud/database"
 	"mcloud/handlers"
 	"mcloud/middleware"
 	"mcloud/models"
+	"mcloud/repositories"
 	"mcloud/services"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	log.Println("mCloud 私人网盘系统启动中...")
+	log.Println("starting mCloud service")
 
-	// 加载配置
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
-		log.Fatalf("加载配置失败: %v", err)
+		log.Fatalf("load config failed: %v", err)
 	}
 
-	// 初始化 MySQL
 	if err := database.InitMySQL(&cfg.Database); err != nil {
-		log.Fatalf("初始化数据库失败: %v", err)
+		log.Fatalf("init mysql failed: %v", err)
 	}
 
-	// 自动迁移数据库表
 	database.DB.AutoMigrate(
 		&models.User{},
 		&models.Folder{},
@@ -41,66 +38,62 @@ func main() {
 		&models.RecycleBinItem{},
 		&models.ThumbnailTask{},
 	)
-	log.Println("数据库表迁移完成")
+	log.Println("database migration completed")
 
-	// 初始化 Redis
 	if err := database.InitRedis(&cfg.Redis); err != nil {
-		log.Fatalf("初始化 Redis 失败: %v", err)
+		log.Fatalf("init redis failed: %v", err)
 	}
 
-	// 创建存储目录
-	os.MkdirAll(cfg.Storage.BasePath+"/files", 0755)
-	os.MkdirAll(cfg.Storage.BasePath+"/thumbnails", 0755)
-	os.MkdirAll(cfg.Storage.BasePath+"/temp", 0755)
+	if err := os.MkdirAll(filepath.Join(cfg.Storage.BasePath, "files"), 0o755); err != nil {
+		log.Fatalf("create files dir failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.Storage.BasePath, "thumbnails"), 0o755); err != nil {
+		log.Fatalf("create thumbnails dir failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.Storage.BasePath, "temp"), 0o755); err != nil {
+		log.Fatalf("create temp dir failed: %v", err)
+	}
 
-	// 启动后台清理任务
+	repoContainer := repositories.NewGormRepositories(database.DB, database.RedisClient).BuildContainer()
+	serviceContainer := services.NewContainer(repoContainer)
+	handlers.SetServices(serviceContainer)
+
 	services.StartCleanupWorkers()
-	log.Println("后台清理任务已启动")
+	log.Println("cleanup workers started")
 
-	// 设置路由
 	r := gin.Default()
 	r.Use(middleware.CORSMiddleware())
 	setupRoutes(r)
 
-	// 启动服务器
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("服务器启动在 http://%s", addr)
+	log.Printf("server listening on http://%s", addr)
 	if err := r.Run(addr); err != nil {
-		log.Fatalf("服务器启动失败: %v", err)
+		log.Fatalf("server start failed: %v", err)
 	}
 }
 
-// setupRoutes 注册所有 API 路由。
-// 公开路由：健康检查、注册、登录。
-// 认证路由：需要 JWT Bearer Token，涵盖用户信息、文件夹、文件、回收站管理。
 func setupRoutes(r *gin.Engine) {
 	api := r.Group("/api")
 
-	// 健康检查
 	api.GET("/health", handlers.HealthCheck)
 
-	// 认证（无需登录）
 	auth := api.Group("/auth")
 	{
 		auth.POST("/register", handlers.Register)
 		auth.POST("/login", handlers.Login)
 	}
 
-	// 需要认证的路由
 	protected := api.Group("")
 	protected.Use(middleware.AuthMiddleware())
 	{
-		// 用户信息
 		protected.GET("/auth/profile", handlers.GetProfile)
 		protected.GET("/user/storage/quota", handlers.GetStorageQuota)
 
-		// 文件夹管理
 		protected.GET("/folders", handlers.ListFolders)
 		protected.POST("/folders", handlers.CreateFolder)
 		protected.PUT("/folders/:id", handlers.RenameFolder)
 		protected.DELETE("/folders/:id", handlers.DeleteFolder)
 
-		// 文件管理
 		protected.GET("/files", handlers.ListFiles)
 		protected.POST("/files/upload", handlers.UploadFile)
 		protected.POST("/files/upload/init", handlers.InitChunkedUpload)
@@ -118,7 +111,6 @@ func setupRoutes(r *gin.Engine) {
 		protected.POST("/files/batch/move", handlers.BatchMoveFiles)
 		protected.POST("/files/thumbnails/batch", handlers.BatchGetThumbnails)
 
-		// 回收站
 		protected.GET("/recycle-bin", handlers.ListRecycleBin)
 		protected.POST("/recycle-bin/:id/restore", handlers.RestoreItem)
 		protected.DELETE("/recycle-bin/:id", handlers.PermanentDelete)
