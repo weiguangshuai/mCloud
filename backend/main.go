@@ -1,3 +1,5 @@
+// mCloud 私人网盘系统入口。
+// 负责加载配置、初始化数据库/Redis、执行表迁移、启动后台清理任务并注册路由。
 package main
 
 import (
@@ -68,6 +70,9 @@ func main() {
 	}
 }
 
+// setupRoutes 注册所有 API 路由。
+// 公开路由：健康检查、注册、登录。
+// 认证路由：需要 JWT Bearer Token，涵盖用户信息、文件夹、文件、回收站管理。
 func setupRoutes(r *gin.Engine) {
 	api := r.Group("/api")
 
