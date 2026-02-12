@@ -27,13 +27,8 @@ import (
 	"gorm.io/gorm"
 )
 
-func validateFolderOwnership(userID uint, folderID uint) error {
-	if folderID == 0 {
-		return nil
-	}
-
-	var folder models.Folder
-	return database.DB.Where("id = ? AND user_id = ?", folderID, userID).First(&folder).Error
+func validateFolderOwnership(userID uint, folderID uint) (uint, error) {
+	return resolveFolderIDForUser(userID, folderID)
 }
 
 func respondFolderValidationError(c *gin.Context, err error) bool {
@@ -52,7 +47,12 @@ func respondFolderValidationError(c *gin.Context, err error) bool {
 // ListFiles 获取文件列表（支持分页）
 func ListFiles(c *gin.Context) {
 	userID := c.GetUint("user_id")
-	folderID, _ := strconv.ParseUint(c.DefaultQuery("folder_id", "0"), 10, 32)
+	folderID, err := strconv.ParseUint(c.DefaultQuery("folder_id", "0"), 10, 32)
+	if err != nil {
+		utils.Error(c, http.StatusBadRequest, "无效的 folder_id")
+		return
+	}
+
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	sortBy := c.DefaultQuery("sort_by", config.AppConfig.Pagination.DefaultSortBy)
@@ -73,20 +73,59 @@ func ListFiles(c *gin.Context) {
 		order = "desc"
 	}
 
+	resolvedFolderID, err := validateFolderOwnership(userID, uint(folderID))
+	if respondFolderValidationError(c, err) {
+		return
+	}
+
+	rootFolder, err := getOrCreateUserRootFolder(userID)
+	if err != nil {
+		utils.Error(c, http.StatusInternalServerError, "获取根目录失败")
+		return
+	}
+
+	isRootRequest := resolvedFolderID == rootFolder.ID
+	folderScopedQuery := func(db *gorm.DB) *gorm.DB {
+		if isRootRequest {
+			// 兼容历史数据：早期实现将根目录文件写在 folder_id=0。
+			return db.Where("user_id = ? AND (folder_id = ? OR folder_id = 0)", userID, rootFolder.ID)
+		}
+		return db.Where("user_id = ? AND folder_id = ?", userID, resolvedFolderID)
+	}
+
 	var total int64
-	database.DB.Model(&models.File{}).
-		Where("user_id = ? AND folder_id = ?", userID, uint(folderID)).
-		Count(&total)
+	if err := folderScopedQuery(database.DB.Model(&models.File{})).Count(&total).Error; err != nil {
+		utils.Error(c, http.StatusInternalServerError, "查询文件总数失败")
+		return
+	}
+
+	sortColumns := map[string]string{
+		"name":       "files.name",
+		"created_at": "files.created_at",
+		"file_size":  "file_objects.file_size",
+	}
+	sortColumn := sortColumns[sortBy]
+	orderSQL := strings.ToUpper(order)
 
 	var files []models.File
-	database.DB.Preload("FileObject").
-		Where("user_id = ? AND folder_id = ?", userID, uint(folderID)).
-		Order(sortBy + " " + order).
+	query := folderScopedQuery(database.DB.Preload("FileObject").Model(&models.File{}))
+	if sortBy == "file_size" {
+		query = query.Joins("LEFT JOIN file_objects ON file_objects.id = files.file_object_id").Select("files.*")
+	}
+
+	if err := query.
+		Order(sortColumn + " " + orderSQL).
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
-		Find(&files)
+		Find(&files).Error; err != nil {
+		utils.Error(c, http.StatusInternalServerError, "查询文件列表失败")
+		return
+	}
 
 	totalPages := int(math.Ceil(float64(total) / float64(pageSize)))
+	if totalPages == 0 {
+		totalPages = 1
+	}
 
 	utils.Success(c, gin.H{
 		"files": files,
@@ -104,8 +143,17 @@ func ListFiles(c *gin.Context) {
 // UploadFile 小文件直接上传（< 5MB）
 func UploadFile(c *gin.Context) {
 	userID := c.GetUint("user_id")
+
 	folderIDStr := c.PostForm("folder_id")
-	folderID, _ := strconv.ParseUint(folderIDStr, 10, 32)
+	folderID, err := strconv.ParseUint(folderIDStr, 10, 32)
+	if folderIDStr != "" && err != nil {
+		utils.Error(c, http.StatusBadRequest, "无效的 folder_id")
+		return
+	}
+	resolvedFolderID, err := validateFolderOwnership(userID, uint(folderID))
+	if respondFolderValidationError(c, err) {
+		return
+	}
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -117,6 +165,11 @@ func UploadFile(c *gin.Context) {
 	// 检查文件大小
 	if header.Size > config.AppConfig.Storage.MaxFileSize {
 		utils.Error(c, http.StatusBadRequest, "文件大小超出限制")
+		return
+	}
+
+	if !isFileExtensionAllowed(header.Filename) {
+		utils.Error(c, http.StatusBadRequest, "不支持的文件类型")
 		return
 	}
 
@@ -215,7 +268,7 @@ func UploadFile(c *gin.Context) {
 	fileRecord := models.File{
 		Name:         storageName,
 		OriginalName: header.Filename,
-		FolderID:     uint(folderID),
+		FolderID:     resolvedFolderID,
 		UserID:       userID,
 		FileObjectID: fileObj.ID,
 	}
@@ -239,6 +292,32 @@ func sanitizeFilename(name string) string {
 		"..", "_", "/", "_", "\\", "_",
 	)
 	return replacer.Replace(name)
+}
+
+func isFileExtensionAllowed(fileName string) bool {
+	allowed := config.AppConfig.Storage.AllowedExtensions
+	if len(allowed) == 0 {
+		return true
+	}
+
+	fileExt := strings.ToLower(filepath.Ext(fileName))
+	for _, ext := range allowed {
+		normalized := strings.ToLower(strings.TrimSpace(ext))
+		if normalized == "*" {
+			return true
+		}
+		if normalized == "" {
+			continue
+		}
+		if !strings.HasPrefix(normalized, ".") {
+			normalized = "." + normalized
+		}
+		if normalized == fileExt {
+			return true
+		}
+	}
+
+	return false
 }
 
 // getMimeType 根据扩展名获取 MIME 类型
@@ -270,9 +349,16 @@ func InitChunkedUpload(c *gin.Context) {
 		utils.Error(c, http.StatusBadRequest, "参数错误: "+err.Error())
 		return
 	}
-	if respondFolderValidationError(c, validateFolderOwnership(userID, req.FolderID)) {
+	if !isFileExtensionAllowed(req.FileName) {
+		utils.Error(c, http.StatusBadRequest, "不支持的文件类型")
 		return
 	}
+
+	resolvedFolderID, err := validateFolderOwnership(userID, req.FolderID)
+	if respondFolderValidationError(c, err) {
+		return
+	}
+	req.FolderID = resolvedFolderID
 
 	// 检查存储配额
 	var user models.User
@@ -289,7 +375,7 @@ func InitChunkedUpload(c *gin.Context) {
 
 	// 秒传检查（用户范围内，通过 file_objects JOIN files 查询）
 	var existingFileObj models.FileObject
-	err := database.DB.
+	err = database.DB.
 		Joins("JOIN files ON files.file_object_id = file_objects.id").
 		Where("files.user_id = ? AND file_objects.file_md5 = ? AND files.deleted_at IS NULL", userID, req.FileMD5).
 		First(&existingFileObj).Error
@@ -445,7 +531,8 @@ func CompleteUpload(c *gin.Context) {
 		utils.Error(c, http.StatusNotFound, "上传任务不存在")
 		return
 	}
-	if respondFolderValidationError(c, validateFolderOwnership(userID, task.FolderID)) {
+	resolvedFolderID, err := validateFolderOwnership(userID, task.FolderID)
+	if respondFolderValidationError(c, err) {
 		return
 	}
 
@@ -534,7 +621,7 @@ func CompleteUpload(c *gin.Context) {
 	fileRecord := models.File{
 		Name:         storageName,
 		OriginalName: task.FileName,
-		FolderID:     task.FolderID,
+		FolderID:     resolvedFolderID,
 		UserID:       userID,
 		FileObjectID: fileObj.ID,
 	}
@@ -737,16 +824,12 @@ func MoveFile(c *gin.Context) {
 		return
 	}
 
-	// 验证目标文件夹存在
-	if req.FolderID > 0 {
-		var folder models.Folder
-		if err := database.DB.Where("id = ? AND user_id = ?", req.FolderID, userID).First(&folder).Error; err != nil {
-			utils.Error(c, http.StatusNotFound, "目标文件夹不存在")
-			return
-		}
+	resolvedFolderID, err := validateFolderOwnership(userID, req.FolderID)
+	if respondFolderValidationError(c, err) {
+		return
 	}
 
-	database.DB.Model(&file).Update("folder_id", req.FolderID)
+	database.DB.Model(&file).Update("folder_id", resolvedFolderID)
 	utils.SuccessWithMessage(c, "文件已移动", file)
 }
 
@@ -813,17 +896,63 @@ func BatchMoveFiles(c *gin.Context) {
 		return
 	}
 
-	if req.FolderID > 0 {
-		var folder models.Folder
-		if err := database.DB.Where("id = ? AND user_id = ?", req.FolderID, userID).First(&folder).Error; err != nil {
-			utils.Error(c, http.StatusNotFound, "目标文件夹不存在")
-			return
-		}
+	resolvedFolderID, err := validateFolderOwnership(userID, req.FolderID)
+	if respondFolderValidationError(c, err) {
+		return
 	}
 
 	database.DB.Model(&models.File{}).
 		Where("id IN ? AND user_id = ?", req.FileIDs, userID).
-		Update("folder_id", req.FolderID)
+		Update("folder_id", resolvedFolderID)
 
 	utils.SuccessWithMessage(c, "批量移动成功", nil)
+}
+
+// BatchGetThumbnails 批量获取缩略图状态
+func BatchGetThumbnails(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var req struct {
+		FileIDs []uint `json:"file_ids" binding:"required,min=1,max=200"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.Error(c, http.StatusBadRequest, "参数错误")
+		return
+	}
+
+	var fileRecords []models.File
+	if err := database.DB.Preload("FileObject").
+		Where("user_id = ? AND id IN ?", userID, req.FileIDs).
+		Find(&fileRecords).Error; err != nil {
+		utils.Error(c, http.StatusInternalServerError, "查询缩略图信息失败")
+		return
+	}
+
+	fileMap := make(map[uint]models.File, len(fileRecords))
+	for _, f := range fileRecords {
+		fileMap[f.ID] = f
+	}
+
+	items := make([]gin.H, 0, len(req.FileIDs))
+	for _, fileID := range req.FileIDs {
+		f, ok := fileMap[fileID]
+		if !ok {
+			items = append(items, gin.H{
+				"file_id":       fileID,
+				"exists":        false,
+				"has_thumbnail": false,
+			})
+			continue
+		}
+
+		hasThumb := f.FileObject.ThumbnailPath != ""
+		items = append(items, gin.H{
+			"file_id":       fileID,
+			"exists":        true,
+			"has_thumbnail": hasThumb,
+			"thumbnail_url": fmt.Sprintf("/api/files/%d/thumbnail", fileID),
+		})
+	}
+
+	utils.Success(c, gin.H{"items": items})
 }

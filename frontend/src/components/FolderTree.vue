@@ -1,55 +1,116 @@
-<template>
+﻿<template>
   <div class="folder-tree">
-    <div class="tree-item root" :class="{ active: currentId === 0 }" @click="selectFolder(0, '根目录')">
-      <el-icon><Folder /></el-icon>
-      <span>全部文件</span>
-    </div>
-    <div v-for="folder in folders" :key="folder.id" class="tree-item"
-      :class="{ active: currentId === folder.id }" @click="selectFolder(folder.id, folder.name)">
-      <el-icon><Folder /></el-icon>
-      <span>{{ folder.name }}</span>
-    </div>
+    <el-tree
+      ref="treeRef"
+      :data="treeData"
+      :props="treeProps"
+      node-key="id"
+      lazy
+      :load="loadNode"
+      highlight-current
+      :expand-on-click-node="false"
+      @node-click="handleNodeClick"
+    >
+      <template #default="{ data }">
+        <div class="node-content">
+          <el-icon><Folder /></el-icon>
+          <span>{{ data.name }}</span>
+        </div>
+      </template>
+    </el-tree>
   </div>
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Folder } from '@element-plus/icons-vue'
 import { listFolders } from '../api/folder'
 import { useUserStore } from '../store'
 
 const emit = defineEmits(['select'])
 const userStore = useUserStore()
-const folders = ref([])
-const currentId = ref(0)
+const treeRef = ref(null)
+const treeData = ref([])
 
-async function loadFolders(parentId = 0) {
-  try {
-    const res = await listFolders(parentId)
-    folders.value = res.data || []
-  } catch (e) {}
+const treeProps = {
+  label: 'name',
+  children: 'children',
+  isLeaf: 'isLeaf',
 }
 
-function selectFolder(id, name) {
-  currentId.value = id
-  const breadcrumbs = [{ id: 0, name: '根目录' }]
-  if (id !== 0) {
-    breadcrumbs.push({ id, name })
+const rootId = computed(() => userStore.userInfo?.root_folder_id || 0)
+
+function buildRootNode() {
+  return [
+    {
+      id: rootId.value,
+      name: '全部文件',
+      isRoot: true,
+      isLeaf: false,
+    },
+  ]
+}
+
+async function loadNode(node, resolve) {
+  if (node.level === 0) {
+    resolve(treeData.value)
+    return
   }
-  emit('select', { id, breadcrumbs })
+
+  try {
+    const res = await listFolders(node.data.id)
+    const children = (res.data || []).map((folder) => ({
+      id: folder.id,
+      name: folder.name,
+      isLeaf: false,
+    }))
+    resolve(children)
+  } catch (e) {
+    resolve([])
+  }
 }
 
-watch(() => userStore.currentFolderID, (val) => {
-  loadFolders(val)
-}, { immediate: true })
+function handleNodeClick(data, node) {
+  const breadcrumbs = []
+  let current = node
+  while (current && current.level > 0) {
+    const itemName = current.level === 1 ? '根目录' : current.data.name
+    breadcrumbs.unshift({ id: current.data.id, name: itemName })
+    current = current.parent
+  }
+
+  if (breadcrumbs.length === 0) {
+    breadcrumbs.push({ id: rootId.value, name: '根目录' })
+  }
+
+  emit('select', { id: data.id, breadcrumbs })
+}
+
+watch(
+  () => rootId.value,
+  async () => {
+    treeData.value = buildRootNode()
+    await nextTick()
+    treeRef.value?.setCurrentKey(userStore.currentFolderID || rootId.value)
+  },
+  { immediate: true }
+)
+
+watch(
+  () => userStore.currentFolderID,
+  (folderId) => {
+    treeRef.value?.setCurrentKey(folderId)
+  }
+)
 </script>
 
 <style scoped>
-.folder-tree { padding: 4px; }
-.tree-item {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  cursor: pointer; border-radius: 4px; margin-bottom: 2px;
+.folder-tree {
+  padding: 4px;
 }
-.tree-item:hover { background: #ecf5ff; }
-.tree-item.active { background: #409eff; color: #fff; }
+.node-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 </style>

@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div
     ref="dropZone"
     class="upload-wrapper"
@@ -127,38 +127,72 @@ async function chunkedUpload(file, taskIdx) {
     uploadTasks.value[taskIdx].progress = Math.round(progress * 20) // MD5 占 0-20%
   })
 
-  // 2. 初始化上传（含秒传检查）
-  uploadTasks.value[taskIdx].statusText = '检查秒传...'
-  const initRes = await initChunkedUpload({
-    file_name: file.name,
-    file_size: file.size,
-    file_md5: md5,
-    folder_id: props.folderId,
-  })
+  // 2. 初始化上传（含秒传检查）或复用已存在任务
+  let uploadId = ''
+  let totalChunks = 0
+  let chunkSize = CHUNK_SIZE
+  let uploadedSet = new Set()
 
-  // 秒传成功
-  if (initRes.data?.status === 'instant_upload') {
-    uploadTasks.value[taskIdx].statusText = '秒传完成'
-    return
+  const resumeTask = findUploadTaskBySignature(file.name, file.size, md5)
+  if (resumeTask) {
+    uploadTasks.value[taskIdx].statusText = '检测到断点，校验任务状态...'
+    try {
+      uploadId = resumeTask.uploadId
+      totalChunks = resumeTask.totalChunks
+      const statusRes = await getUploadStatus(uploadId)
+      if (statusRes.data?.status === 'completed') {
+        removeUploadTask(uploadId)
+        uploadTasks.value[taskIdx].statusText = '上传已完成'
+        uploadTasks.value[taskIdx].progress = 100
+        return
+      }
+      if (statusRes.data?.uploaded_chunks) {
+        statusRes.data.uploaded_chunks.forEach((idx) => uploadedSet.add(idx))
+      }
+    } catch (e) {
+      // 历史任务已失效，回退到重新初始化上传。
+      removeUploadTask(uploadId)
+      uploadId = ''
+      totalChunks = 0
+      uploadedSet = new Set()
+    }
   }
 
-  const uploadId = initRes.data.upload_id
-  const totalChunks = initRes.data.total_chunks
-  const chunkSize = initRes.data.chunk_size || CHUNK_SIZE
+  if (!uploadId) {
+    uploadTasks.value[taskIdx].statusText = '检查秒传...'
+    const initRes = await initChunkedUpload({
+      file_name: file.name,
+      file_size: file.size,
+      file_md5: md5,
+      folder_id: props.folderId,
+    })
 
-  // 保存到 localStorage 以支持断点续传
-  saveUploadTask(uploadId, file.name, file.size, md5, totalChunks)
-
-  // 3. 查询已上传的分片（断点续传）
-  let uploadedSet = new Set()
-  try {
-    const statusRes = await getUploadStatus(uploadId)
-    if (statusRes.data?.uploaded_chunks) {
-      statusRes.data.uploaded_chunks.forEach((idx) => uploadedSet.add(idx))
+    // 秒传成功
+    if (initRes.data?.status === 'instant_upload') {
+      uploadTasks.value[taskIdx].statusText = '秒传完成'
+      uploadTasks.value[taskIdx].progress = 100
+      return
     }
-  } catch (_) {}
 
-  // 4. 逐片上传
+    uploadId = initRes.data.upload_id
+    totalChunks = initRes.data.total_chunks
+    chunkSize = initRes.data.chunk_size || CHUNK_SIZE
+
+    // 保存到 localStorage 以支持断点续传
+    saveUploadTask(uploadId, file.name, file.size, md5, totalChunks)
+
+    // 查询已上传分片（用于重试场景）
+    try {
+      const statusRes = await getUploadStatus(uploadId)
+      if (statusRes.data?.uploaded_chunks) {
+        statusRes.data.uploaded_chunks.forEach((idx) => uploadedSet.add(idx))
+      }
+    } catch (e) {
+      uploadedSet = new Set()
+    }
+  }
+
+  // 3. 逐片上传
   uploadTasks.value[taskIdx].statusText = '分片上传中...'
   for (let i = 0; i < totalChunks; i++) {
     if (uploadedSet.has(i)) continue
@@ -179,7 +213,7 @@ async function chunkedUpload(file, taskIdx) {
     uploadTasks.value[taskIdx].progress = Math.round(20 + chunkProgress)
   }
 
-  // 5. 完成合并
+  // 4. 完成合并
   uploadTasks.value[taskIdx].statusText = '合并文件...'
   uploadTasks.value[taskIdx].progress = 90
   await completeUpload({ upload_id: uploadId })
@@ -225,6 +259,15 @@ function saveUploadTask(uploadId, fileName, fileSize, md5, totalChunks) {
   localStorage.setItem('mcloud_upload_tasks', JSON.stringify(tasks))
 }
 
+function findUploadTaskBySignature(fileName, fileSize, md5) {
+  const tasks = JSON.parse(localStorage.getItem('mcloud_upload_tasks') || '{}')
+  for (const [uploadId, task] of Object.entries(tasks)) {
+    if (task.fileName === fileName && task.fileSize === fileSize && task.md5 === md5) {
+      return { uploadId, totalChunks: task.totalChunks }
+    }
+  }
+  return null
+}
 function removeUploadTask(uploadId) {
   const tasks = JSON.parse(localStorage.getItem('mcloud_upload_tasks') || '{}')
   delete tasks[uploadId]
@@ -245,6 +288,11 @@ onMounted(() => {
   }
   if (cleaned) {
     localStorage.setItem('mcloud_upload_tasks', JSON.stringify(tasks))
+  }
+
+  const pendingCount = Object.keys(tasks).length
+  if (pendingCount > 0) {
+    ElMessage.info(`检测到 ${pendingCount} 个未完成上传任务，请重新选择对应文件继续上传`)
   }
 })
 
@@ -290,3 +338,6 @@ defineExpose({ triggerUpload })
   margin-bottom: 4px;
 }
 </style>
+
+
+

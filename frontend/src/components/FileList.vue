@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="file-list-container">
     <!-- 工具栏 -->
     <div class="toolbar" v-if="!loading && (folders.length > 0 || files.length > 0 || selectedItems.length > 0)">
@@ -117,8 +117,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Folder, Document, Loading, Grid, List } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listFiles, deleteFile, renameFile, moveFile, batchDeleteFiles, batchMoveFiles,
-  getThumbnailUrl, getDownloadUrl, getAuthHeaders,
+  listFiles,
+  deleteFile,
+  renameFile,
+  moveFile,
+  batchDeleteFiles,
+  batchMoveFiles,
+  fetchThumbnailBlob,
+  downloadFileBlob,
 } from '../api/file'
 import { listFolders, deleteFolder, renameFolder } from '../api/folder'
 import { useUserStore } from '../store'
@@ -133,6 +139,7 @@ const files = ref([])
 const pagination = ref({ page: 1, page_size: 20, total: 0 })
 const viewMode = ref('grid')
 const contextMenu = ref({ visible: false, x: 0, y: 0, target: null, type: '' })
+const thumbnailSrcMap = ref({})
 
 // 批量选择
 const selectedItems = ref([]) // [{type: 'file', id: 1}, ...]
@@ -152,9 +159,30 @@ function getFileObj(file) {
   return file.file_object || {}
 }
 
+function revokeThumbnailObjectURLs() {
+  for (const url of Object.values(thumbnailSrcMap.value)) {
+    URL.revokeObjectURL(url)
+  }
+  thumbnailSrcMap.value = {}
+}
+
+async function preloadThumbnails(targetFiles = files.value) {
+  revokeThumbnailObjectURLs()
+  const imageFiles = targetFiles.filter((file) => getFileObj(file).is_image)
+  await Promise.all(
+    imageFiles.map(async (file) => {
+      try {
+        const blob = await fetchThumbnailBlob(file.id)
+        thumbnailSrcMap.value[file.id] = URL.createObjectURL(blob)
+      } catch (e) {
+        // 忽略单个缩略图加载失败，不影响列表渲染。
+      }
+    })
+  )
+}
+
 function getThumbnailSrc(fileId) {
-  const headers = getAuthHeaders()
-  return `${getThumbnailUrl(fileId)}?token=${encodeURIComponent(headers.Authorization.replace('Bearer ', ''))}`
+  return thumbnailSrcMap.value[fileId] || ''
 }
 
 // 列表视图数据
@@ -183,6 +211,7 @@ async function loadFiles() {
     ])
     folders.value = folderRes.data || []
     files.value = fileRes.data?.files || []
+    await preloadThumbnails(files.value)
     if (fileRes.data?.pagination) {
       pagination.value = fileRes.data.pagination
     }
@@ -250,14 +279,19 @@ function onRowClick(row) {
   }
 }
 
-function handleDownload() {
+async function handleDownload() {
   if (contextMenu.value.type === 'file') {
-    const url = getDownloadUrl(contextMenu.value.target.id)
-    const headers = getAuthHeaders()
-    const a = document.createElement('a')
-    a.href = `${url}?token=${encodeURIComponent(headers.Authorization.replace('Bearer ', ''))}`
-    a.download = contextMenu.value.target.original_name
-    a.click()
+    try {
+      const blob = await downloadFileBlob(contextMenu.value.target.id)
+      const objectUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = objectUrl
+      a.download = contextMenu.value.target.original_name
+      a.click()
+      URL.revokeObjectURL(objectUrl)
+    } catch (e) {
+      ElMessage.error('下载失败')
+    }
   }
   contextMenu.value.visible = false
 }
@@ -315,11 +349,12 @@ async function handleBatchDelete() {
 
 // 移动功能
 async function loadFolderTree() {
+  const rootId = userStore.userInfo?.root_folder_id || 0
   try {
-    const res = await listFolders(0)
-    folderTreeData.value = [{ id: 0, name: '根目录', children: res.data || [] }]
+    const res = await listFolders(rootId)
+    folderTreeData.value = [{ id: rootId, name: '根目录', children: res.data || [] }]
   } catch (e) {
-    folderTreeData.value = [{ id: 0, name: '根目录', children: [] }]
+    folderTreeData.value = [{ id: rootId, name: '根目录', children: [] }]
   }
 }
 
@@ -386,7 +421,10 @@ watch(
 )
 
 onMounted(() => document.addEventListener('click', hideContextMenu))
-onUnmounted(() => document.removeEventListener('click', hideContextMenu))
+onUnmounted(() => {
+  document.removeEventListener('click', hideContextMenu)
+  revokeThumbnailObjectURLs()
+})
 
 defineExpose({ loadFiles })
 </script>
@@ -529,3 +567,15 @@ defineExpose({ loadFiles })
   }
 }
 </style>
+
+
+
+
+
+
+
+
+
+
+
+

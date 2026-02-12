@@ -115,13 +115,20 @@ func GetProfile(c *gin.Context) {
 		return
 	}
 
+	rootFolder, err := getOrCreateUserRootFolder(user.ID)
+	if err != nil {
+		utils.Error(c, http.StatusInternalServerError, "获取用户根目录失败")
+		return
+	}
+
 	utils.Success(c, gin.H{
-		"id":            user.ID,
-		"username":      user.Username,
-		"nickname":      user.Nickname,
-		"avatar":        user.Avatar,
-		"storage_quota": user.StorageQuota,
-		"storage_used":  user.StorageUsed,
-		"created_at":    user.CreatedAt,
+		"id":             user.ID,
+		"username":       user.Username,
+		"nickname":       user.Nickname,
+		"avatar":         user.Avatar,
+		"storage_quota":  user.StorageQuota,
+		"storage_used":   user.StorageUsed,
+		"root_folder_id": rootFolder.ID,
+		"created_at":     user.CreatedAt,
 	})
 }

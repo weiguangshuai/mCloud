@@ -1,5 +1,4 @@
-import request from '../utils/request'
-import { getToken } from '../utils/auth'
+﻿import request from '../utils/request'
 
 export function listFiles(params) {
   return request.get('/files', { params })
@@ -31,22 +30,6 @@ export function getUploadStatus(uploadId) {
   return request.get(`/files/upload/status/${uploadId}`)
 }
 
-export function getDownloadUrl(fileId) {
-  return `/api/files/${fileId}/download`
-}
-
-export function getPreviewUrl(fileId) {
-  return `/api/files/${fileId}/preview`
-}
-
-export function getThumbnailUrl(fileId) {
-  return `/api/files/${fileId}/thumbnail`
-}
-
-export function getAuthHeaders() {
-  return { Authorization: `Bearer ${getToken()}` }
-}
-
 export function deleteFile(id) {
   return request.delete(`/files/${id}`)
 }
@@ -69,4 +52,16 @@ export function batchMoveFiles(fileIds, folderId) {
 
 export function getStorageQuota() {
   return request.get('/user/storage/quota')
+}
+
+export function downloadFileBlob(fileId) {
+  return request.get(`/files/${fileId}/download`, { responseType: 'blob' })
+}
+
+export function fetchThumbnailBlob(fileId) {
+  return request.get(`/files/${fileId}/thumbnail`, { responseType: 'blob' })
+}
+
+export function fetchPreviewBlob(fileId) {
+  return request.get(`/files/${fileId}/preview`, { responseType: 'blob' })
 }

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -41,7 +42,7 @@ func cleanExpiredUploadTasks() {
 	for _, task := range tasks {
 		// 删除临时目录
 		if task.TempDir != "" {
-			os.RemoveAll(task.TempDir)
+			_ = os.RemoveAll(task.TempDir)
 		}
 		// 删除数据库记录
 		database.DB.Delete(&task)
@@ -80,42 +81,11 @@ func cleanExpiredRecycleBinItems() {
 		item := &items[i]
 		err := database.DB.Transaction(func(tx *gorm.DB) error {
 			if item.OriginalType == "file" {
-				// 永久删除逻辑文件记录
-				if err := tx.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.File{}).Error; err != nil {
+				if err := cleanupPermanentDeleteFile(tx, item); err != nil {
 					return err
 				}
-
-				// 更新存储配额
-				if item.FileSize != nil {
-					if err := tx.Model(&models.User{}).Where("id = ?", item.UserID).
-						UpdateColumn("storage_used", gorm.Expr("GREATEST(storage_used - ?, 0)", *item.FileSize)).Error; err != nil {
-						return err
-					}
-				}
-
-				// 递减 FileObject ref_count
-				if item.FileObjectID != nil {
-					var fileObj models.FileObject
-					if err := tx.First(&fileObj, *item.FileObjectID).Error; err == nil {
-						if fileObj.RefCount <= 1 {
-							absPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.FilePath)
-							os.Remove(absPath)
-							if fileObj.ThumbnailPath != "" {
-								thumbPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.ThumbnailPath)
-								os.Remove(thumbPath)
-							}
-							if err := tx.Delete(&fileObj).Error; err != nil {
-								return err
-							}
-						} else {
-							if err := tx.Model(&fileObj).Update("ref_count", gorm.Expr("ref_count - 1")).Error; err != nil {
-								return err
-							}
-						}
-					}
-				}
 			} else {
-				if err := tx.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.Folder{}).Error; err != nil {
+				if err := cleanupPermanentDeleteFolder(tx, item); err != nil {
 					return err
 				}
 			}
@@ -131,4 +101,141 @@ func cleanExpiredRecycleBinItems() {
 	if len(items) > 0 {
 		log.Printf("共清理 %d 个过期回收站项目", len(items))
 	}
+}
+
+func cleanupPermanentDeleteFile(tx *gorm.DB, item *models.RecycleBinItem) error {
+	userID := item.UserID
+
+	var file models.File
+	err := tx.Unscoped().Preload("FileObject").
+		Where("id = ? AND user_id = ?", item.OriginalID, userID).
+		First(&file).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	fileObjectID := uint(0)
+	fileSize := int64(0)
+	if err == nil {
+		fileObjectID = file.FileObjectID
+		fileSize = file.FileObject.FileSize
+	} else {
+		if item.FileObjectID != nil {
+			fileObjectID = *item.FileObjectID
+		}
+		if item.FileSize != nil {
+			fileSize = *item.FileSize
+		}
+	}
+
+	if err := tx.Unscoped().
+		Where("id = ? AND user_id = ?", item.OriginalID, userID).
+		Delete(&models.File{}).Error; err != nil {
+		return err
+	}
+
+	if fileSize > 0 {
+		if err := tx.Model(&models.User{}).Where("id = ?", userID).
+			UpdateColumn("storage_used", gorm.Expr("GREATEST(storage_used - ?, 0)", fileSize)).Error; err != nil {
+			return err
+		}
+	}
+
+	if fileObjectID > 0 {
+		if err := cleanupDecrementFileObjectRef(tx, fileObjectID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func cleanupPermanentDeleteFolder(tx *gorm.DB, item *models.RecycleBinItem) error {
+	userID := item.UserID
+
+	var rootFolder models.Folder
+	if err := tx.Unscoped().
+		Where("id = ? AND user_id = ?", item.OriginalID, userID).
+		First(&rootFolder).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if rootFolder.IsRoot != nil && *rootFolder.IsRoot {
+		return nil
+	}
+
+	var folders []models.Folder
+	if err := tx.Unscoped().
+		Where("user_id = ? AND (id = ? OR path LIKE ?)", userID, rootFolder.ID, rootFolder.Path+"/%").
+		Find(&folders).Error; err != nil {
+		return err
+	}
+	if len(folders) == 0 {
+		return nil
+	}
+
+	folderIDs := make([]uint, 0, len(folders))
+	for _, f := range folders {
+		folderIDs = append(folderIDs, f.ID)
+	}
+
+	var files []models.File
+	if err := tx.Unscoped().Preload("FileObject").
+		Where("user_id = ? AND folder_id IN ?", userID, folderIDs).
+		Find(&files).Error; err != nil {
+		return err
+	}
+
+	fileIDs := make([]uint, 0, len(files))
+	for i := range files {
+		fileIDs = append(fileIDs, files[i].ID)
+		size := files[i].FileObject.FileSize
+		tmp := &models.RecycleBinItem{UserID: userID, OriginalID: files[i].ID, FileObjectID: &files[i].FileObjectID, FileSize: &size}
+		if err := cleanupPermanentDeleteFile(tx, tmp); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Unscoped().Where("id IN ?", folderIDs).Delete(&models.Folder{}).Error; err != nil {
+		return err
+	}
+
+	if len(fileIDs) > 0 {
+		if err := tx.Where("user_id = ? AND original_type = 'file' AND original_id IN ?", userID, fileIDs).
+			Delete(&models.RecycleBinItem{}).Error; err != nil {
+			return err
+		}
+	}
+	if len(folderIDs) > 0 {
+		if err := tx.Where("user_id = ? AND original_type = 'folder' AND original_id IN ?", userID, folderIDs).
+			Delete(&models.RecycleBinItem{}).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func cleanupDecrementFileObjectRef(tx *gorm.DB, fileObjectID uint) error {
+	var fileObj models.FileObject
+	if err := tx.First(&fileObj, fileObjectID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	if fileObj.RefCount <= 1 {
+		absPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.FilePath)
+		_ = os.Remove(absPath)
+		if fileObj.ThumbnailPath != "" {
+			thumbPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.ThumbnailPath)
+			_ = os.Remove(thumbPath)
+		}
+		return tx.Delete(&fileObj).Error
+	}
+
+	return tx.Model(&fileObj).Update("ref_count", gorm.Expr("ref_count - 1")).Error
 }

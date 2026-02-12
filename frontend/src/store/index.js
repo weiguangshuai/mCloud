@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+﻿import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 export const useUserStore = defineStore('user', () => {
@@ -8,10 +8,17 @@ export const useUserStore = defineStore('user', () => {
 
   function setUser(user) {
     userInfo.value = user
+    const rootId = user?.root_folder_id || 0
+    if (currentFolderID.value === 0) {
+      currentFolderID.value = rootId
+      breadcrumbs.value = [{ id: rootId, name: '根目录' }]
+    }
   }
 
   function clearUser() {
     userInfo.value = null
+    currentFolderID.value = 0
+    breadcrumbs.value = [{ id: 0, name: '根目录' }]
   }
 
   function setCurrentFolder(folderID, folderBreadcrumbs) {
@@ -21,5 +28,19 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
-  return { userInfo, currentFolderID, breadcrumbs, setUser, clearUser, setCurrentFolder }
+  function resetToRoot() {
+    const rootId = userInfo.value?.root_folder_id || 0
+    currentFolderID.value = rootId
+    breadcrumbs.value = [{ id: rootId, name: '根目录' }]
+  }
+
+  return {
+    userInfo,
+    currentFolderID,
+    breadcrumbs,
+    setUser,
+    clearUser,
+    setCurrentFolder,
+    resetToRoot,
+  }
 })

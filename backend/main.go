@@ -116,6 +116,7 @@ func setupRoutes(r *gin.Engine) {
 		protected.PUT("/files/:id/move", handlers.MoveFile)
 		protected.POST("/files/batch/delete", handlers.BatchDeleteFiles)
 		protected.POST("/files/batch/move", handlers.BatchMoveFiles)
+		protected.POST("/files/thumbnails/batch", handlers.BatchGetThumbnails)
 
 		// 回收站
 		protected.GET("/recycle-bin", handlers.ListRecycleBin)

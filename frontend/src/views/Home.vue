@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="home-container">
     <!-- 顶部导航栏 -->
     <el-header class="header">
@@ -91,6 +91,7 @@ async function loadUser() {
   try {
     const res = await getProfile()
     userStore.setUser(res.data)
+    userStore.resetToRoot()
   } catch (e) {
     router.push('/login')
   }
@@ -174,3 +175,7 @@ function formatSize(bytes) {
   .header-right .el-button span { display: none; }
 }
 </style>
+
+
+
+
