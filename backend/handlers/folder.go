@@ -12,6 +12,7 @@ import (
 	"mcloud/utils"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type CreateFolderRequest struct {
@@ -144,32 +145,57 @@ func DeleteFolder(c *gin.Context) {
 		return
 	}
 
-	// 写入回收站
-	if config.AppConfig.RecycleBin.Enabled {
-		parentIDVal := uint(0)
-		if folder.ParentID != nil {
-			parentIDVal = *folder.ParentID
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		// 写入回收站
+		if config.AppConfig.RecycleBin.Enabled {
+			parentIDVal := uint(0)
+			if folder.ParentID != nil {
+				parentIDVal = *folder.ParentID
+			}
+			recycleBinItem := models.RecycleBinItem{
+				UserID:           userID,
+				OriginalID:       folder.ID,
+				OriginalType:     "folder",
+				OriginalName:     folder.Name,
+				OriginalPath:     folder.Path,
+				OriginalFolderID: folder.ParentID,
+				ExpiresAt:        time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
+				Metadata:         fmt.Sprintf(`{"parent_id":%d}`, parentIDVal),
+			}
+			if err := tx.Create(&recycleBinItem).Error; err != nil {
+				return err
+			}
 		}
-		recycleBinItem := models.RecycleBinItem{
-			UserID:           userID,
-			OriginalID:       folder.ID,
-			OriginalType:     "folder",
-			OriginalName:     folder.Name,
-			OriginalPath:     folder.Path,
-			OriginalFolderID: folder.ParentID,
-			ExpiresAt:        time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
-			Metadata:         fmt.Sprintf(`{"parent_id":%d}`, parentIDVal),
+
+		// 收集所有受影响的文件夹 ID（当前文件夹 + 所有子文件夹）
+		var affectedFolderIDs []uint
+		if err := tx.Model(&models.Folder{}).
+			Where("user_id = ? AND (id = ? OR path LIKE ?)", userID, folderID, folder.Path+"/%").
+			Pluck("id", &affectedFolderIDs).Error; err != nil {
+			return err
 		}
-		database.DB.Create(&recycleBinItem)
+
+		// 软删除文件夹及其子文件夹
+		if err := tx.Where("user_id = ? AND (id = ? OR path LIKE ?)", userID, folderID, folder.Path+"/%").
+			Delete(&models.Folder{}).Error; err != nil {
+			return err
+		}
+
+		// 软删除所有受影响文件夹内的文件
+		if len(affectedFolderIDs) > 0 {
+			if err := tx.Where("user_id = ? AND folder_id IN ?", userID, affectedFolderIDs).
+				Delete(&models.File{}).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		utils.Error(c, http.StatusInternalServerError, "删除文件夹失败")
+		return
 	}
-
-	// 软删除文件夹及其子文件夹
-	database.DB.Where("user_id = ? AND (id = ? OR path LIKE ?)", userID, folderID, folder.Path+"/%").
-		Delete(&models.Folder{})
-
-	// 软删除文件夹内的文件
-	database.DB.Where("user_id = ? AND folder_id = ?", userID, folderID).
-		Delete(&models.File{})
 
 	utils.SuccessWithMessage(c, "文件夹已删除", nil)
 }

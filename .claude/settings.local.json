@@ -6,7 +6,8 @@
       "Bash(go mod tidy:*)",
       "Bash(del:*)",
       "Bash(go build ./...)",
-      "Bash(npx vite build:*)"
+      "Bash(npx vite build:*)",
+      "Bash(go test:*)"
     ]
   }
 }

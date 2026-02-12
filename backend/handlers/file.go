@@ -294,8 +294,8 @@ func InitChunkedUpload(c *gin.Context) {
 		Where("files.user_id = ? AND file_objects.file_md5 = ? AND files.deleted_at IS NULL", userID, req.FileMD5).
 		First(&existingFileObj).Error
 	if err == nil {
-		// 秒传：复用 FileObject，ref_count +1
-		database.DB.Model(&existingFileObj).Update("ref_count", existingFileObj.RefCount+1)
+		// 秒传：复用 FileObject，ref_count +1（原子操作）
+		database.DB.Model(&existingFileObj).Update("ref_count", gorm.Expr("ref_count + 1"))
 		newFile := models.File{
 			Name:         existingFileObj.FilePath[strings.LastIndex(existingFileObj.FilePath, string(os.PathSeparator))+1:],
 			OriginalName: req.FileName,
@@ -655,33 +655,42 @@ func DeleteFile(c *gin.Context) {
 		return
 	}
 
-	if config.AppConfig.RecycleBin.Enabled {
-		metadata, _ := json.Marshal(gin.H{
-			"mime_type":      file.FileObject.MimeType,
-			"thumbnail_path": file.FileObject.ThumbnailPath,
-			"is_image":       file.FileObject.IsImage,
-			"width":          file.FileObject.Width,
-			"height":         file.FileObject.Height,
-			"file_md5":       file.FileObject.FileMD5,
-			"file_object_id": file.FileObjectID,
-		})
-		fileSize := file.FileObject.FileSize
-		item := models.RecycleBinItem{
-			UserID:           userID,
-			OriginalID:       file.ID,
-			OriginalType:     "file",
-			OriginalName:     file.OriginalName,
-			OriginalPath:     file.FileObject.FilePath,
-			OriginalFolderID: &file.FolderID,
-			FileObjectID:     &file.FileObjectID,
-			FileSize:         &fileSize,
-			ExpiresAt:        time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
-			Metadata:         string(metadata),
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if config.AppConfig.RecycleBin.Enabled {
+			metadata, _ := json.Marshal(gin.H{
+				"mime_type":      file.FileObject.MimeType,
+				"thumbnail_path": file.FileObject.ThumbnailPath,
+				"is_image":       file.FileObject.IsImage,
+				"width":          file.FileObject.Width,
+				"height":         file.FileObject.Height,
+				"file_md5":       file.FileObject.FileMD5,
+				"file_object_id": file.FileObjectID,
+			})
+			fileSize := file.FileObject.FileSize
+			item := models.RecycleBinItem{
+				UserID:           userID,
+				OriginalID:       file.ID,
+				OriginalType:     "file",
+				OriginalName:     file.OriginalName,
+				OriginalPath:     file.FileObject.FilePath,
+				OriginalFolderID: &file.FolderID,
+				FileObjectID:     &file.FileObjectID,
+				FileSize:         &fileSize,
+				ExpiresAt:        time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
+				Metadata:         string(metadata),
+			}
+			if err := tx.Create(&item).Error; err != nil {
+				return err
+			}
 		}
-		database.DB.Create(&item)
+		return tx.Delete(&file).Error
+	})
+
+	if err != nil {
+		utils.Error(c, http.StatusInternalServerError, "删除文件失败")
+		return
 	}
 
-	database.DB.Delete(&file)
 	utils.SuccessWithMessage(c, "文件已删除", nil)
 }
 
@@ -753,27 +762,39 @@ func BatchDeleteFiles(c *gin.Context) {
 		return
 	}
 
-	for _, fileID := range req.FileIDs {
-		var file models.File
-		if err := database.DB.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err == nil {
-			if config.AppConfig.RecycleBin.Enabled {
-				metadata, _ := json.Marshal(gin.H{
-					"mime_type": file.FileObject.MimeType, "is_image": file.FileObject.IsImage,
-					"file_md5": file.FileObject.FileMD5, "file_object_id": file.FileObjectID,
-				})
-				fileSize := file.FileObject.FileSize
-				item := models.RecycleBinItem{
-					UserID: userID, OriginalID: file.ID, OriginalType: "file",
-					OriginalName: file.OriginalName, OriginalPath: file.FileObject.FilePath,
-					OriginalFolderID: &file.FolderID, FileObjectID: &file.FileObjectID,
-					FileSize:  &fileSize,
-					ExpiresAt: time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
-					Metadata:  string(metadata),
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, fileID := range req.FileIDs {
+			var file models.File
+			if err := tx.Preload("FileObject").Where("id = ? AND user_id = ?", fileID, userID).First(&file).Error; err == nil {
+				if config.AppConfig.RecycleBin.Enabled {
+					metadata, _ := json.Marshal(gin.H{
+						"mime_type": file.FileObject.MimeType, "is_image": file.FileObject.IsImage,
+						"file_md5": file.FileObject.FileMD5, "file_object_id": file.FileObjectID,
+					})
+					fileSize := file.FileObject.FileSize
+					item := models.RecycleBinItem{
+						UserID: userID, OriginalID: file.ID, OriginalType: "file",
+						OriginalName: file.OriginalName, OriginalPath: file.FileObject.FilePath,
+						OriginalFolderID: &file.FolderID, FileObjectID: &file.FileObjectID,
+						FileSize:  &fileSize,
+						ExpiresAt: time.Now().AddDate(0, 0, config.AppConfig.RecycleBin.RetentionDays),
+						Metadata:  string(metadata),
+					}
+					if err := tx.Create(&item).Error; err != nil {
+						return err
+					}
 				}
-				database.DB.Create(&item)
+				if err := tx.Delete(&file).Error; err != nil {
+					return err
+				}
 			}
-			database.DB.Delete(&file)
 		}
+		return nil
+	})
+
+	if err != nil {
+		utils.Error(c, http.StatusInternalServerError, "批量删除失败")
+		return
 	}
 
 	utils.SuccessWithMessage(c, "批量删除成功", nil)

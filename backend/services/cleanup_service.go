@@ -9,6 +9,8 @@ import (
 	"mcloud/config"
 	"mcloud/database"
 	"mcloud/models"
+
+	"gorm.io/gorm"
 )
 
 // StartCleanupWorkers 启动后台清理任务
@@ -74,40 +76,56 @@ func cleanExpiredRecycleBinItems() {
 	var items []models.RecycleBinItem
 	database.DB.Where("expires_at < ?", time.Now()).Find(&items)
 
-	for _, item := range items {
-		if item.OriginalType == "file" {
-			// 永久删除逻辑文件记录
-			database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.File{})
+	for i := range items {
+		item := &items[i]
+		err := database.DB.Transaction(func(tx *gorm.DB) error {
+			if item.OriginalType == "file" {
+				// 永久删除逻辑文件记录
+				if err := tx.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.File{}).Error; err != nil {
+					return err
+				}
 
-			// 更新存储配额
-			if item.FileSize != nil {
-				database.DB.Model(&models.User{}).Where("id = ?", item.UserID).
-					UpdateColumn("storage_used", database.DB.Raw("GREATEST(storage_used - ?, 0)", *item.FileSize))
-			}
-
-			// 递减 FileObject ref_count
-			if item.FileObjectID != nil {
-				var fileObj models.FileObject
-				if err := database.DB.First(&fileObj, *item.FileObjectID).Error; err == nil {
-					newRefCount := fileObj.RefCount - 1
-					if newRefCount <= 0 {
-						absPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.FilePath)
-						os.Remove(absPath)
-						if fileObj.ThumbnailPath != "" {
-							thumbPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.ThumbnailPath)
-							os.Remove(thumbPath)
-						}
-						database.DB.Delete(&fileObj)
-					} else {
-						database.DB.Model(&fileObj).Update("ref_count", newRefCount)
+				// 更新存储配额
+				if item.FileSize != nil {
+					if err := tx.Model(&models.User{}).Where("id = ?", item.UserID).
+						UpdateColumn("storage_used", gorm.Expr("GREATEST(storage_used - ?, 0)", *item.FileSize)).Error; err != nil {
+						return err
 					}
 				}
-			}
-		} else {
-			database.DB.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.Folder{})
-		}
 
-		database.DB.Delete(&item)
+				// 递减 FileObject ref_count
+				if item.FileObjectID != nil {
+					var fileObj models.FileObject
+					if err := tx.First(&fileObj, *item.FileObjectID).Error; err == nil {
+						if fileObj.RefCount <= 1 {
+							absPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.FilePath)
+							os.Remove(absPath)
+							if fileObj.ThumbnailPath != "" {
+								thumbPath := filepath.Join(config.AppConfig.Storage.BasePath, fileObj.ThumbnailPath)
+								os.Remove(thumbPath)
+							}
+							if err := tx.Delete(&fileObj).Error; err != nil {
+								return err
+							}
+						} else {
+							if err := tx.Model(&fileObj).Update("ref_count", gorm.Expr("ref_count - 1")).Error; err != nil {
+								return err
+							}
+						}
+					}
+				}
+			} else {
+				if err := tx.Unscoped().Where("id = ?", item.OriginalID).Delete(&models.Folder{}).Error; err != nil {
+					return err
+				}
+			}
+
+			return tx.Delete(item).Error
+		})
+
+		if err != nil {
+			log.Printf("清理回收站项目失败 (ID: %d): %v", item.ID, err)
+		}
 	}
 
 	if len(items) > 0 {
