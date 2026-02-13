@@ -1,1 +1,0 @@
-import{N as c,h as n}from"./index-BdJXkKq0.js";const i=c("user",()=>{const e=n(null),t=n(0),u=n([{id:0,name:"根目录"}]);function o(r){e.value=r}function l(){e.value=null}function a(r,s){t.value=r,s&&(u.value=s)}return{userInfo:e,currentFolderID:t,breadcrumbs:u,setUser:o,clearUser:l,setCurrentFolder:a}});export{i as u};

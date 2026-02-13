@@ -35,8 +35,11 @@ import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { register } from '../api/auth'
+import { setToken } from '../utils/auth'
+import { useUserStore } from '../store'
 
 const router = useRouter()
+const userStore = useUserStore()
 const formRef = ref(null)
 const loading = ref(false)
 
@@ -71,13 +74,15 @@ async function handleRegister() {
 
   loading.value = true
   try {
-    await register({
+    const res = await register({
       username: form.username,
       password: form.password,
       nickname: form.nickname,
     })
-    ElMessage.success('注册成功，请登录')
-    router.push('/login')
+    setToken(res.data.token)
+    userStore.setUser(res.data.user)
+    ElMessage.success('注册并登录成功')
+    router.push('/')
   } catch (e) {
     // 错误已在拦截器中处理
   } finally {

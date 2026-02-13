@@ -1,4 +1,4 @@
-CREATE TABLE users (
+﻿CREATE TABLE users (
     id INT PRIMARY KEY AUTO_INCREMENT,
     username VARCHAR(50) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,  -- bcrypt 加密
@@ -119,6 +119,7 @@ CREATE TABLE thumbnail_tasks (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 登录 MySQL
+mysql -u root -p
 
 -- 创建数据库
 CREATE DATABASE mcloud CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -130,5 +131,3 @@ FLUSH PRIVILEGES;
 
 -- 使用数据库
 USE mcloud;
-
--- 执行表结构创建（从数据库设计部分的 SQL）

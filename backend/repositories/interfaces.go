@@ -70,6 +70,7 @@ type FileRepository interface {
 type FileObjectRepository interface {
 	Create(ctx context.Context, tx *gorm.DB, fileObject *models.FileObject) error
 	GetByID(ctx context.Context, tx *gorm.DB, fileObjectID uint) (models.FileObject, error)
+	GetByMD5(ctx context.Context, tx *gorm.DB, md5 string) (models.FileObject, error)
 	IncrementRefCount(ctx context.Context, tx *gorm.DB, fileObjectID uint) error
 	DecrementRefCount(ctx context.Context, tx *gorm.DB, fileObjectID uint) error
 	DeleteByID(ctx context.Context, tx *gorm.DB, fileObjectID uint) error

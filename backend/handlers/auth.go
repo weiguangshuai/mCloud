@@ -37,9 +37,8 @@ func Register(c *gin.Context) {
 	}
 
 	utils.Success(c, gin.H{
-		"id":       result.ID,
-		"username": result.Username,
-		"nickname": result.Nickname,
+		"token": result.Token,
+		"user":  result.User,
 	})
 }
 

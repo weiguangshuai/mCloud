@@ -235,6 +235,34 @@ func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint
 		return models.File{}, newAppError(http.StatusInternalServerError, "重置文件流失败", err)
 	}
 
+	existingObj, err := s.fileObjects.GetByMD5(ctx, nil, fileMD5)
+	if err == nil {
+		fileRecord := models.File{
+			Name:         filepath.Base(existingObj.FilePath),
+			OriginalName: header.Filename,
+			FolderID:     resolvedFolderID,
+			UserID:       userID,
+			FileObjectID: existingObj.ID,
+		}
+		err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+			if err := s.fileObjects.IncrementRefCount(ctx, tx, existingObj.ID); err != nil {
+				return err
+			}
+			if err := s.files.Create(ctx, tx, &fileRecord); err != nil {
+				return err
+			}
+			return s.users.AddStorageUsed(ctx, tx, userID, header.Size)
+		})
+		if err != nil {
+			return models.File{}, newAppError(http.StatusInternalServerError, "failed to save file record", err)
+		}
+		fileRecord.FileObject = existingObj
+		return fileRecord, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.File{}, newAppError(http.StatusInternalServerError, "failed to check duplicate file", err)
+	}
+
 	now := time.Now()
 	fileUUID := uuid.New().String()
 	storageName := fileUUID + "_" + sanitizeFilename(header.Filename)
@@ -344,7 +372,7 @@ func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in Ini
 		}, nil)
 	}
 
-	existingObj, err := s.files.FindByUserAndMD5(ctx, nil, userID, in.FileMD5)
+	existingObj, err := s.fileObjects.GetByMD5(ctx, nil, in.FileMD5)
 	if err == nil {
 		var newFile models.File
 		err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
@@ -399,6 +427,46 @@ func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in Ini
 	return InitChunkedUploadOutput{UploadID: uploadID, ChunkSize: chunkSize, TotalChunks: totalChunks}, nil
 }
 
+func chunkFilePath(tempDir string, chunkIndex int) string {
+	return filepath.Join(tempDir, fmt.Sprintf("chunk_%d", chunkIndex))
+}
+
+func chunkFileExists(tempDir string, chunkIndex int) bool {
+	info, err := os.Stat(chunkFilePath(tempDir, chunkIndex))
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+func (s *fileService) listUploadedChunks(ctx context.Context, task models.UploadTask) []int {
+	if task.TotalChunks <= 0 {
+		return nil
+	}
+
+	chunkSet := make(map[int]struct{}, task.TotalChunks)
+	if s.uploadProgress != nil {
+		uploadedChunks, err := s.uploadProgress.UploadedChunks(ctx, task.UploadID)
+		if err == nil {
+			for _, idx := range uploadedChunks {
+				if idx >= 0 && idx < task.TotalChunks {
+					chunkSet[idx] = struct{}{}
+				}
+			}
+		}
+	}
+
+	for i := 0; i < task.TotalChunks; i++ {
+		if chunkFileExists(task.TempDir, i) {
+			chunkSet[i] = struct{}{}
+		}
+	}
+
+	result := make([]int, 0, len(chunkSet))
+	for idx := range chunkSet {
+		result = append(result, idx)
+	}
+	sort.Ints(result)
+	return result
+}
+
 func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID string, chunkIndex int, chunk multipart.File) (UploadChunkOutput, error) {
 	task, err := s.uploadTasks.GetByUploadID(ctx, nil, uploadID)
 	if err != nil {
@@ -410,13 +478,19 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 	if task.UserID != userID {
 		return UploadChunkOutput{}, newAppError(http.StatusForbidden, "无权操作此上传任务", nil)
 	}
+	if chunkIndex < 0 || chunkIndex >= task.TotalChunks {
+		return UploadChunkOutput{}, newAppError(http.StatusBadRequest, "invalid chunk index", nil)
+	}
 
-	uploaded, err := s.uploadProgress.IsChunkUploaded(ctx, uploadID, chunkIndex)
-	if err != nil {
-		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "检查分片状态失败", err)
+	uploaded := chunkFileExists(task.TempDir, chunkIndex)
+	if s.uploadProgress != nil {
+		progressUploaded, progressErr := s.uploadProgress.IsChunkUploaded(ctx, uploadID, chunkIndex)
+		if progressErr == nil {
+			uploaded = uploaded || progressUploaded
+		}
 	}
 	if uploaded {
-		uploadedCount, _ := s.uploadProgress.UploadedCount(ctx, uploadID)
+		uploadedCount := int64(len(s.listUploadedChunks(ctx, task)))
 		return UploadChunkOutput{
 			ChunkIndex:     chunkIndex,
 			UploadedChunks: uploadedCount,
@@ -425,7 +499,11 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 		}, nil
 	}
 
-	chunkPath := filepath.Join(task.TempDir, fmt.Sprintf("chunk_%d", chunkIndex))
+	if err := os.MkdirAll(task.TempDir, 0o755); err != nil {
+		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "保存分片失败", err)
+	}
+
+	chunkPath := chunkFilePath(task.TempDir, chunkIndex)
 	dst, err := os.Create(chunkPath)
 	if err != nil {
 		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "保存分片失败", err)
@@ -435,16 +513,16 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 		_ = os.Remove(chunkPath)
 		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "写入分片失败", err)
 	}
-	_ = dst.Close()
-
-	if err := s.uploadProgress.AddChunk(ctx, uploadID, chunkIndex, config.AppConfig.Redis.UploadTaskExpire); err != nil {
-		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "记录分片进度失败", err)
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(chunkPath)
+		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "写入分片失败", err)
 	}
 
-	uploadedCount, err := s.uploadProgress.UploadedCount(ctx, uploadID)
-	if err != nil {
-		return UploadChunkOutput{}, newAppError(http.StatusInternalServerError, "查询分片进度失败", err)
+	if s.uploadProgress != nil {
+		_ = s.uploadProgress.AddChunk(ctx, uploadID, chunkIndex, config.AppConfig.Redis.UploadTaskExpire)
 	}
+
+	uploadedCount := int64(len(s.listUploadedChunks(ctx, task)))
 
 	return UploadChunkOutput{ChunkIndex: chunkIndex, UploadedChunks: uploadedCount, TotalChunks: task.TotalChunks}, nil
 }
@@ -458,11 +536,7 @@ func (s *fileService) GetUploadStatus(ctx context.Context, userID uint, uploadID
 		return UploadStatusOutput{}, newAppError(http.StatusInternalServerError, "查询上传任务失败", err)
 	}
 
-	uploadedChunks, err := s.uploadProgress.UploadedChunks(ctx, uploadID)
-	if err != nil {
-		return UploadStatusOutput{}, newAppError(http.StatusInternalServerError, "查询分片进度失败", err)
-	}
-	sort.Ints(uploadedChunks)
+	uploadedChunks := s.listUploadedChunks(ctx, task)
 
 	return UploadStatusOutput{
 		UploadID:       uploadID,
@@ -491,10 +565,7 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 		return models.File{}, newAppError(http.StatusInternalServerError, "校验目标文件夹失败", err)
 	}
 
-	uploadedCount, err := s.uploadProgress.UploadedCount(ctx, uploadID)
-	if err != nil {
-		return models.File{}, newAppError(http.StatusInternalServerError, "查询分片进度失败", err)
-	}
+	uploadedCount := int64(len(s.listUploadedChunks(ctx, task)))
 	if int(uploadedCount) < task.TotalChunks {
 		return models.File{}, newAppError(http.StatusBadRequest, fmt.Sprintf("分片未全部上传，已上传 %d/%d", uploadedCount, task.TotalChunks), nil)
 	}
@@ -515,14 +586,20 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 	}
 
 	for i := 0; i < task.TotalChunks; i++ {
-		chunkPath := filepath.Join(task.TempDir, fmt.Sprintf("chunk_%d", i))
-		chunkData, err := os.ReadFile(chunkPath)
+		chunkPath := chunkFilePath(task.TempDir, i)
+		chunkFile, err := os.Open(chunkPath)
 		if err != nil {
 			finalFile.Close()
 			_ = os.Remove(finalPath)
 			return models.File{}, newAppError(http.StatusInternalServerError, fmt.Sprintf("读取分片 %d 失败", i), err)
 		}
-		if _, err := finalFile.Write(chunkData); err != nil {
+		if _, err := io.Copy(finalFile, chunkFile); err != nil {
+			chunkFile.Close()
+			finalFile.Close()
+			_ = os.Remove(finalPath)
+			return models.File{}, newAppError(http.StatusInternalServerError, "合并文件失败", err)
+		}
+		if err := chunkFile.Close(); err != nil {
 			finalFile.Close()
 			_ = os.Remove(finalPath)
 			return models.File{}, newAppError(http.StatusInternalServerError, "合并文件失败", err)
@@ -546,6 +623,41 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 	if actualMD5 != task.FileMD5 {
 		_ = os.Remove(finalPath)
 		return models.File{}, newAppError(http.StatusBadRequest, "文件完整性校验失败，MD5不匹配", nil)
+	}
+
+	existingObj, err := s.fileObjects.GetByMD5(ctx, nil, task.FileMD5)
+	if err == nil {
+		fileRecord := models.File{
+			Name:         filepath.Base(existingObj.FilePath),
+			OriginalName: task.FileName,
+			FolderID:     resolvedFolderID,
+			UserID:       userID,
+			FileObjectID: existingObj.ID,
+		}
+		err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+			if err := s.fileObjects.IncrementRefCount(ctx, tx, existingObj.ID); err != nil {
+				return err
+			}
+			if err := s.files.Create(ctx, tx, &fileRecord); err != nil {
+				return err
+			}
+			if err := s.users.AddStorageUsed(ctx, tx, userID, task.FileSize); err != nil {
+				return err
+			}
+			return s.uploadTasks.UpdateStatus(ctx, tx, uploadID, "completed")
+		})
+		if err != nil {
+			return models.File{}, newAppError(http.StatusInternalServerError, "failed to save file record", err)
+		}
+		_ = os.Remove(finalPath)
+		_ = os.RemoveAll(task.TempDir)
+		_ = s.uploadProgress.Clear(ctx, uploadID)
+		fileRecord.FileObject = existingObj
+		return fileRecord, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		_ = os.Remove(finalPath)
+		return models.File{}, newAppError(http.StatusInternalServerError, "failed to check duplicate file", err)
 	}
 
 	isImage := IsImageFile(task.FileName)

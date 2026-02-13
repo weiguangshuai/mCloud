@@ -48,7 +48,7 @@ type ProfileOutput struct {
 }
 
 type AuthService interface {
-	Register(ctx context.Context, in RegisterInput) (AuthUser, error)
+	Register(ctx context.Context, in RegisterInput) (LoginOutput, error)
 	Login(ctx context.Context, in LoginInput) (LoginOutput, error)
 	GetProfile(ctx context.Context, userID uint) (ProfileOutput, error)
 }
@@ -63,18 +63,18 @@ func NewAuthService(txManager TxManager, users repositories.UserRepository, fold
 	return &authService{txManager: txManager, users: users, resolver: folderResolver{folders: folders}}
 }
 
-func (s *authService) Register(ctx context.Context, in RegisterInput) (AuthUser, error) {
+func (s *authService) Register(ctx context.Context, in RegisterInput) (LoginOutput, error) {
 	count, err := s.users.CountByUsername(ctx, in.Username)
 	if err != nil {
-		return AuthUser{}, newAppError(http.StatusInternalServerError, "failed to check username", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to check username", err)
 	}
 	if count > 0 {
-		return AuthUser{}, newAppError(http.StatusBadRequest, "username already exists", nil)
+		return LoginOutput{}, newAppError(http.StatusBadRequest, "username already exists", nil)
 	}
 
 	hashedPassword, err := utils.HashPassword(in.Password)
 	if err != nil {
-		return AuthUser{}, newAppError(http.StatusInternalServerError, "failed to hash password", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to hash password", err)
 	}
 
 	user := models.User{
@@ -92,10 +92,18 @@ func (s *authService) Register(ctx context.Context, in RegisterInput) (AuthUser,
 		return err
 	})
 	if err != nil {
-		return AuthUser{}, newAppError(http.StatusInternalServerError, "failed to create user", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to create user", err)
 	}
 
-	return AuthUser{ID: user.ID, Username: user.Username, Nickname: user.Nickname}, nil
+	token, err := utils.GenerateToken(user.ID)
+	if err != nil {
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to generate token", err)
+	}
+
+	return LoginOutput{
+		Token: token,
+		User:  AuthUser{ID: user.ID, Username: user.Username, Nickname: user.Nickname},
+	}, nil
 }
 
 func (s *authService) Login(ctx context.Context, in LoginInput) (LoginOutput, error) {

@@ -165,11 +165,14 @@ func TestAuthServiceRegisterSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register returned error: %v", err)
 	}
-	if out.ID == 0 {
+	if out.User.ID == 0 {
 		t.Fatalf("expected user id to be assigned")
 	}
-	if _, ok := folders.roots[out.ID]; !ok {
-		t.Fatalf("expected root folder to be created for user %d", out.ID)
+	if out.Token == "" {
+		t.Fatalf("expected token to be generated")
+	}
+	if _, ok := folders.roots[out.User.ID]; !ok {
+		t.Fatalf("expected root folder to be created for user %d", out.User.ID)
 	}
 }
 

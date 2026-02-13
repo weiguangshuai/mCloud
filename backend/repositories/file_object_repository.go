@@ -26,6 +26,12 @@ func (r *GormFileObjectRepository) GetByID(_ context.Context, tx *gorm.DB, fileO
 	return obj, err
 }
 
+func (r *GormFileObjectRepository) GetByMD5(_ context.Context, tx *gorm.DB, md5 string) (models.FileObject, error) {
+	var obj models.FileObject
+	err := useTx(r.db, tx).Where("file_md5 = ?", md5).First(&obj).Error
+	return obj, err
+}
+
 func (r *GormFileObjectRepository) IncrementRefCount(_ context.Context, tx *gorm.DB, fileObjectID uint) error {
 	return useTx(r.db, tx).Model(&models.FileObject{}).
 		Where("id = ?", fileObjectID).
