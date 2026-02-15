@@ -43,6 +43,8 @@ import {
 
 const CHUNK_SIZE = 5 * 1024 * 1024 // 5MB
 const CHUNK_THRESHOLD = 5 * 1024 * 1024 // 大于5MB使用分片上传
+const MAX_CHUNK_RETRIES = 3
+const CHUNK_RETRY_DELAY_MS = 1000
 
 const props = defineProps({ folderId: { type: Number, default: 0 } })
 const emit = defineEmits(['uploaded'])
@@ -97,7 +99,7 @@ async function processFiles(files) {
       uploadTasks.value[taskIdx].statusText = '上传完成'
     } catch (err) {
       uploadTasks.value[taskIdx].status = 'error'
-      const msg = err?.response?.data?.message || '上传失败'
+      const msg = err?.response?.data?.message || err?.message || '上传失败'
       uploadTasks.value[taskIdx].statusText = msg
       ElMessage.error(`${file.name}: ${msg}`)
     }
@@ -140,6 +142,9 @@ async function chunkedUpload(file, taskIdx) {
       uploadId = resumeTask.uploadId
       totalChunks = resumeTask.totalChunks
       const statusRes = await getUploadStatus(uploadId)
+      if (Number.isInteger(statusRes.data?.total_chunks) && statusRes.data.total_chunks > 0) {
+        totalChunks = statusRes.data.total_chunks
+      }
       if (statusRes.data?.status === 'completed') {
         removeUploadTask(uploadId)
         uploadTasks.value[taskIdx].statusText = '上传已完成'
@@ -193,6 +198,7 @@ async function chunkedUpload(file, taskIdx) {
   }
 
   // 3. 逐片上传
+  let completedChunks = uploadedSet.size
   uploadTasks.value[taskIdx].statusText = '分片上传中...'
   for (let i = 0; i < totalChunks; i++) {
     if (uploadedSet.has(i)) continue
@@ -206,10 +212,17 @@ async function chunkedUpload(file, taskIdx) {
     formData.append('chunk_index', i)
     formData.append('chunk', blob)
 
-    await uploadChunk(formData)
+    uploadTasks.value[taskIdx].statusText = `分片上传中... (${i + 1}/${totalChunks})`
+    await uploadChunkWithRetry(formData, uploadId, i, (e) => {
+      if (!e.total || totalChunks <= 0) return
+      const currentChunkProgress = e.loaded / e.total
+      const overall = (completedChunks + currentChunkProgress) / totalChunks
+      uploadTasks.value[taskIdx].progress = Math.round(20 + overall * 70)
+    })
+    completedChunks++
 
     // 进度：20-90% 分给分片上传
-    const chunkProgress = ((i + 1) / totalChunks) * 70
+    const chunkProgress = (completedChunks / totalChunks) * 70
     uploadTasks.value[taskIdx].progress = Math.round(20 + chunkProgress)
   }
 
@@ -267,6 +280,36 @@ function findUploadTaskBySignature(fileName, fileSize, md5) {
     }
   }
   return null
+}
+
+function isTimeoutError(error) {
+  if (error?.code === 'ECONNABORTED') return true
+  const message = String(error?.message || '').toLowerCase()
+  return message.includes('timeout')
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function uploadChunkWithRetry(formData, uploadId, chunkIndex, onProgress) {
+  let lastError = null
+  for (let attempt = 0; attempt <= MAX_CHUNK_RETRIES; attempt++) {
+    try {
+      await uploadChunk(formData, onProgress)
+      return
+    } catch (error) {
+      lastError = error
+      const timeoutHint = isTimeoutError(error) ? ' timeout' : ''
+      console.warn(
+        `[upload] chunk failed${timeoutHint}: upload_id=${uploadId}, chunk=${chunkIndex}, attempt=${attempt + 1}`,
+        error
+      )
+      if (attempt === MAX_CHUNK_RETRIES) break
+      await sleep(CHUNK_RETRY_DELAY_MS * (attempt + 1))
+    }
+  }
+  throw lastError
 }
 function removeUploadTask(uploadId) {
   const tasks = JSON.parse(localStorage.getItem('mcloud_upload_tasks') || '{}')

@@ -1,4 +1,6 @@
-﻿import request from '../utils/request'
+import request from '../utils/request'
+
+const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000
 
 export function listFiles(params) {
   return request.get('/files', { params })
@@ -7,6 +9,7 @@ export function listFiles(params) {
 export function uploadFile(formData, onProgress) {
   return request.post('/files/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: UPLOAD_TIMEOUT_MS,
     onUploadProgress: onProgress,
   })
 }
@@ -18,12 +21,15 @@ export function initChunkedUpload(data) {
 export function uploadChunk(formData, onProgress) {
   return request.post('/files/upload/chunk', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: UPLOAD_TIMEOUT_MS,
     onUploadProgress: onProgress,
   })
 }
 
 export function completeUpload(data) {
-  return request.post('/files/upload/complete', data)
+  return request.post('/files/upload/complete', data, {
+    timeout: UPLOAD_TIMEOUT_MS,
+  })
 }
 
 export function getUploadStatus(uploadId) {

@@ -3,6 +3,8 @@ package database
 import (
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"mcloud/config"
 
@@ -20,8 +22,17 @@ func InitMySQL(cfg *config.DatabaseConfig) error {
 		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database, cfg.Charset)
 
 	var err error
+	gormLogger := logger.New(
+		log.New(os.Stdout, "", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             time.Second,
+			LogLevel:                  logger.Info,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
 	DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger:                                   logger.Default.LogMode(logger.Info),
+		Logger:                                   gormLogger,
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 	if err != nil {
