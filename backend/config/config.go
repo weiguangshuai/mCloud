@@ -2,12 +2,14 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
 	Server     ServerConfig      `yaml:"server"`
+	Log        LogConfig         `yaml:"log"`
 	Database   DatabaseConfig    `yaml:"database"`
 	Storage    StorageConfig     `yaml:"storage"`
 	Redis      RedisConfig       `yaml:"redis"`
@@ -23,6 +25,10 @@ type Config struct {
 type ServerConfig struct {
 	Port int    `yaml:"port"`
 	Host string `yaml:"host"`
+}
+
+type LogConfig struct {
+	Level string `yaml:"level"`
 }
 
 type DatabaseConfig struct {
@@ -125,6 +131,12 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	level := strings.ToLower(strings.TrimSpace(cfg.Log.Level))
+	if level == "" {
+		level = "info"
+	}
+	cfg.Log.Level = level
+
 	if cfg.AuthCookie.AccessName == "" {
 		cfg.AuthCookie.AccessName = "access_token"
 	}

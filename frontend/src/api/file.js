@@ -10,18 +10,22 @@ export function uploadFile(formData, onProgress) {
   return request.post('/files/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: UPLOAD_TIMEOUT_MS,
+    skipErrorMessage: true,
     onUploadProgress: onProgress,
   })
 }
 
 export function initChunkedUpload(data) {
-  return request.post('/files/upload/init', data)
+  return request.post('/files/upload/init', data, {
+    skipErrorMessage: true,
+  })
 }
 
 export function uploadChunk(formData, onProgress) {
   return request.post('/files/upload/chunk', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: UPLOAD_TIMEOUT_MS,
+    skipErrorMessage: true,
     onUploadProgress: onProgress,
   })
 }
@@ -29,11 +33,14 @@ export function uploadChunk(formData, onProgress) {
 export function completeUpload(data) {
   return request.post('/files/upload/complete', data, {
     timeout: UPLOAD_TIMEOUT_MS,
+    skipErrorMessage: true,
   })
 }
 
 export function getUploadStatus(uploadId) {
-  return request.get(`/files/upload/status/${uploadId}`)
+  return request.get(`/files/upload/status/${uploadId}`, {
+    skipErrorMessage: true,
+  })
 }
 
 export function deleteFile(id) {

@@ -213,13 +213,22 @@ async function chunkedUpload(file, taskIdx) {
     formData.append('chunk', blob)
 
     uploadTasks.value[taskIdx].statusText = `分片上传中... (${i + 1}/${totalChunks})`
-    await uploadChunkWithRetry(formData, uploadId, i, (e) => {
-      if (!e.total || totalChunks <= 0) return
-      const currentChunkProgress = e.loaded / e.total
-      const overall = (completedChunks + currentChunkProgress) / totalChunks
-      uploadTasks.value[taskIdx].progress = Math.round(20 + overall * 70)
-    })
+    await uploadChunkWithRetry(
+      formData,
+      uploadId,
+      i,
+      (e) => {
+        if (!e.total || totalChunks <= 0) return
+        const currentChunkProgress = e.loaded / e.total
+        const overall = (completedChunks + currentChunkProgress) / totalChunks
+        uploadTasks.value[taskIdx].progress = Math.round(20 + overall * 70)
+      },
+      (attempt, maxAttempts) => {
+        uploadTasks.value[taskIdx].statusText = `网络波动，重试分片... (${i + 1}/${totalChunks}, ${attempt}/${maxAttempts})`
+      }
+    )
     completedChunks++
+    uploadTasks.value[taskIdx].statusText = `分片上传中... (${Math.min(i + 1, totalChunks)}/${totalChunks})`
 
     // 进度：20-90% 分给分片上传
     const chunkProgress = (completedChunks / totalChunks) * 70
@@ -292,8 +301,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function uploadChunkWithRetry(formData, uploadId, chunkIndex, onProgress) {
+async function uploadChunkWithRetry(formData, uploadId, chunkIndex, onProgress, onRetry) {
   let lastError = null
+  const maxAttempts = MAX_CHUNK_RETRIES + 1
   for (let attempt = 0; attempt <= MAX_CHUNK_RETRIES; attempt++) {
     try {
       await uploadChunk(formData, onProgress)
@@ -306,6 +316,9 @@ async function uploadChunkWithRetry(formData, uploadId, chunkIndex, onProgress) 
         error
       )
       if (attempt === MAX_CHUNK_RETRIES) break
+      if (onRetry) {
+        onRetry(attempt + 2, maxAttempts, error)
+      }
       await sleep(CHUNK_RETRY_DELAY_MS * (attempt + 1))
     }
   }

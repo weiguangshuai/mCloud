@@ -9,6 +9,7 @@ import (
 	"mcloud/config"
 	"mcloud/database"
 	"mcloud/handlers"
+	"mcloud/logger"
 	"mcloud/middleware"
 	"mcloud/models"
 	"mcloud/repositories"
@@ -24,6 +25,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config failed: %v", err)
 	}
+	logger.SetLevel(cfg.Log.Level)
 
 	if err := database.InitMySQL(&cfg.Database); err != nil {
 		log.Fatalf("init mysql failed: %v", err)
@@ -61,7 +63,9 @@ func main() {
 	services.StartCleanupWorkers()
 	log.Println("cleanup workers started")
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestLogger())
 	r.Use(middleware.CORSMiddleware())
 	setupRoutes(r)
 

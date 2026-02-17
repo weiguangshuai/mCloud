@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
 
+	"mcloud/logger"
 	"mcloud/services"
 	"mcloud/utils"
 
@@ -84,16 +84,16 @@ func InitChunkedUpload(c *gin.Context) {
 		FolderID: req.FolderID,
 	})
 	if respondServiceError(c, err) {
-		log.Printf("[upload] init failed user=%d file=%q size=%d err=%v", userID, req.FileName, req.FileSize, err)
+		logger.Debugf("[upload] init failed user=%d file=%q size=%d err=%v", userID, req.FileName, req.FileSize, err)
 		return
 	}
 
 	if result.Status == "instant_upload" {
-		log.Printf("[upload] instant success user=%d file=%q size=%d file_id=%d", userID, req.FileName, req.FileSize, result.FileID)
+		logger.Debugf("[upload] instant success user=%d file=%q size=%d file_id=%d", userID, req.FileName, req.FileSize, result.FileID)
 		utils.SuccessWithMessage(c, "instant upload success", gin.H{"status": result.Status, "file_id": result.FileID})
 		return
 	}
-	log.Printf("[upload] init success user=%d upload_id=%s file=%q size=%d chunks=%d chunk_size=%d", userID, result.UploadID, req.FileName, req.FileSize, result.TotalChunks, result.ChunkSize)
+	logger.Debugf("[upload] init success user=%d upload_id=%s file=%q size=%d chunks=%d chunk_size=%d", userID, result.UploadID, req.FileName, req.FileSize, result.TotalChunks, result.ChunkSize)
 
 	utils.Success(c, gin.H{
 		"upload_id":    result.UploadID,
@@ -108,14 +108,14 @@ func UploadChunk(c *gin.Context) {
 	uploadID := c.PostForm("upload_id")
 	chunkIndex, err := strconv.Atoi(c.PostForm("chunk_index"))
 	if err != nil {
-		log.Printf("[upload] chunk invalid index user=%d upload_id=%s value=%q", userID, uploadID, c.PostForm("chunk_index"))
+		logger.Debugf("[upload] chunk invalid index user=%d upload_id=%s value=%q", userID, uploadID, c.PostForm("chunk_index"))
 		utils.Error(c, http.StatusBadRequest, "invalid chunk_index")
 		return
 	}
 
 	chunk, header, err := c.Request.FormFile("chunk")
 	if err != nil {
-		log.Printf("[upload] chunk read failed user=%d upload_id=%s chunk=%d err=%v", userID, uploadID, chunkIndex, err)
+		logger.Debugf("[upload] chunk read failed user=%d upload_id=%s chunk=%d err=%v", userID, uploadID, chunkIndex, err)
 		utils.Error(c, http.StatusBadRequest, "failed to read chunk")
 		return
 	}
@@ -123,10 +123,10 @@ func UploadChunk(c *gin.Context) {
 
 	result, err := getServices().File.UploadChunk(c.Request.Context(), userID, uploadID, chunkIndex, chunk)
 	if respondServiceError(c, err) {
-		log.Printf("[upload] chunk save failed user=%d upload_id=%s chunk=%d size=%d cost=%s err=%v", userID, uploadID, chunkIndex, header.Size, time.Since(start), err)
+		logger.Debugf("[upload] chunk save failed user=%d upload_id=%s chunk=%d size=%d cost=%s err=%v", userID, uploadID, chunkIndex, header.Size, time.Since(start), err)
 		return
 	}
-	log.Printf("[upload] chunk saved user=%d upload_id=%s chunk=%d size=%d uploaded=%d/%d cost=%s", userID, uploadID, chunkIndex, header.Size, result.UploadedChunks, result.TotalChunks, time.Since(start))
+	logger.Debugf("[upload] chunk saved user=%d upload_id=%s chunk=%d size=%d uploaded=%d/%d cost=%s", userID, uploadID, chunkIndex, header.Size, result.UploadedChunks, result.TotalChunks, time.Since(start))
 	utils.Success(c, result)
 }
 
@@ -155,10 +155,10 @@ func CompleteUpload(c *gin.Context) {
 
 	record, err := getServices().File.CompleteUpload(c.Request.Context(), userID, req.UploadID)
 	if respondServiceError(c, err) {
-		log.Printf("[upload] complete failed user=%d upload_id=%s cost=%s err=%v", userID, req.UploadID, time.Since(start), err)
+		logger.Debugf("[upload] complete failed user=%d upload_id=%s cost=%s err=%v", userID, req.UploadID, time.Since(start), err)
 		return
 	}
-	log.Printf("[upload] complete success user=%d upload_id=%s file_id=%d cost=%s", userID, req.UploadID, record.ID, time.Since(start))
+	logger.Debugf("[upload] complete success user=%d upload_id=%s file_id=%d cost=%s", userID, req.UploadID, record.ID, time.Since(start))
 
 	utils.Success(c, record)
 }

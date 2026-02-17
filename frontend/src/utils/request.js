@@ -7,7 +7,7 @@ const request = axios.create({
   timeout: 30000,
 })
 
-// 请求拦截器 - 注入 JWT
+// Request interceptor: inject JWT
 request.interceptors.request.use(
   (config) => {
     const token = getToken()
@@ -19,10 +19,12 @@ request.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// 响应拦截器 - 统一错误处理
+// Response interceptor: centralize error handling
 request.interceptors.response.use(
   (response) => response.data,
   (error) => {
+    const skipErrorMessage = error?.config?.skipErrorMessage === true
+
     if (error.response) {
       const { status, data } = error.response
       if (status === 401) {
@@ -30,10 +32,13 @@ request.interceptors.response.use(
         window.location.href = '/login'
         return
       }
-      ElMessage.error(data.message || '请求失败')
-    } else {
-      ElMessage.error('网络错误，请检查连接')
+      if (!skipErrorMessage) {
+        ElMessage.error(data?.message || 'Request failed')
+      }
+    } else if (!skipErrorMessage) {
+      ElMessage.error('Network error, please check your connection')
     }
+
     return Promise.reject(error)
   }
 )
