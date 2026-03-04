@@ -45,6 +45,22 @@ type InitChunkedUploadOutput struct {
 	FileID      uint   `json:"file_id,omitempty"`
 }
 
+type QueryUploadTaskInput struct {
+	FileName string
+	FileSize int64
+	FileMD5  string
+	FolderID uint
+}
+
+type QueryUploadTaskOutput struct {
+	Resumable      bool      `json:"resumable"`
+	UploadID       string    `json:"upload_id,omitempty"`
+	TotalChunks    int       `json:"total_chunks,omitempty"`
+	UploadedChunks []int     `json:"uploaded_chunks,omitempty"`
+	Status         string    `json:"status,omitempty"`
+	ExpiresAt      time.Time `json:"expires_at,omitempty"`
+}
+
 type UploadChunkOutput struct {
 	ChunkIndex     int    `json:"chunk_index"`
 	UploadedChunks int64  `json:"uploaded_chunks"`
@@ -52,13 +68,33 @@ type UploadChunkOutput struct {
 	Message        string `json:"message,omitempty"`
 }
 
-type UploadStatusOutput struct {
-	UploadID       string `json:"upload_id"`
-	FileName       string `json:"file_name"`
-	FileSize       int64  `json:"file_size"`
-	TotalChunks    int    `json:"total_chunks"`
-	UploadedChunks []int  `json:"uploaded_chunks"`
-	Status         string `json:"status"`
+type UploadTaskListItemOutput struct {
+	UploadID            string     `json:"upload_id"`
+	FileName            string     `json:"file_name"`
+	FileSize            int64      `json:"file_size"`
+	FolderID            uint       `json:"folder_id"`
+	TotalChunks         int        `json:"total_chunks"`
+	UploadedChunksCount int        `json:"uploaded_chunks_count"`
+	UploadedSize        int64      `json:"uploaded_size"`
+	Status              string     `json:"status"`
+	LastError           string     `json:"last_error"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	ExpiresAt           time.Time  `json:"expires_at"`
+}
+
+type UploadTaskDetailOutput struct {
+	UploadID       string    `json:"upload_id"`
+	FileName       string    `json:"file_name"`
+	FileSize       int64     `json:"file_size"`
+	FileMD5        string    `json:"file_md5"`
+	FolderID       uint      `json:"folder_id"`
+	TotalChunks    int       `json:"total_chunks"`
+	UploadedChunks []int     `json:"uploaded_chunks"`
+	UploadedSize   int64     `json:"uploaded_size"`
+	Status         string    `json:"status"`
+	LastError      string    `json:"last_error"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 
 type FileAccessOutput struct {
@@ -76,8 +112,11 @@ type FileService interface {
 	ListFiles(ctx context.Context, userID uint, folderID uint, page int, pageSize int, sortBy string, order string) (FileListOutput, error)
 	UploadFile(ctx context.Context, userID uint, folderID uint, file multipart.File, header *multipart.FileHeader) (models.File, error)
 	InitChunkedUpload(ctx context.Context, userID uint, in InitChunkedUploadInput) (InitChunkedUploadOutput, error)
+	QueryUploadTask(ctx context.Context, userID uint, in QueryUploadTaskInput) (QueryUploadTaskOutput, error)
+	ListUploadTasks(ctx context.Context, userID uint) ([]UploadTaskListItemOutput, error)
+	GetUploadTaskDetail(ctx context.Context, userID uint, uploadID string) (UploadTaskDetailOutput, error)
+	CancelUploadTask(ctx context.Context, userID uint, uploadID string) error
 	UploadChunk(ctx context.Context, userID uint, uploadID string, chunkIndex int, chunk multipart.File) (UploadChunkOutput, error)
-	GetUploadStatus(ctx context.Context, userID uint, uploadID string) (UploadStatusOutput, error)
 	CompleteUpload(ctx context.Context, userID uint, uploadID string) (models.File, error)
 	GetDownloadInfo(ctx context.Context, userID uint, fileID uint) (FileAccessOutput, error)
 	GetPreviewInfo(ctx context.Context, userID uint, fileID uint) (FileAccessOutput, error)
@@ -409,22 +448,156 @@ func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in Ini
 	}
 
 	task := models.UploadTask{
-		UploadID:    uploadID,
-		UserID:      userID,
-		FolderID:    resolvedFolderID,
-		FileName:    in.FileName,
-		FileSize:    in.FileSize,
-		FileMD5:     in.FileMD5,
-		TotalChunks: totalChunks,
-		Status:      "uploading",
-		TempDir:     tempDir,
-		ExpiresAt:   time.Now().Add(24 * time.Hour),
+		UploadID:            uploadID,
+		UserID:              userID,
+		FolderID:            resolvedFolderID,
+		FileName:            in.FileName,
+		FileSize:            in.FileSize,
+		FileMD5:             in.FileMD5,
+		TotalChunks:         totalChunks,
+		Status:              "uploading",
+		UploadedChunksCount: 0,
+		UploadedSize:        0,
+		TempDir:             tempDir,
+		ExpiresAt:           time.Now().Add(uploadTaskExpireDuration()),
 	}
 	if err := s.uploadTasks.Create(ctx, nil, &task); err != nil {
 		return InitChunkedUploadOutput{}, newAppError(http.StatusInternalServerError, "创建上传任务失败", err)
 	}
 
 	return InitChunkedUploadOutput{UploadID: uploadID, ChunkSize: chunkSize, TotalChunks: totalChunks}, nil
+}
+
+func (s *fileService) QueryUploadTask(ctx context.Context, userID uint, in QueryUploadTaskInput) (QueryUploadTaskOutput, error) {
+	if !isFileExtensionAllowed(in.FileName) {
+		return QueryUploadTaskOutput{}, newAppError(http.StatusBadRequest, "unsupported file type", nil)
+	}
+
+	resolvedFolderID, err := s.resolver.resolveFolderIDForUser(ctx, nil, userID, in.FolderID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return QueryUploadTaskOutput{}, newAppError(http.StatusNotFound, "target folder not found", nil)
+		}
+		return QueryUploadTaskOutput{}, newAppError(http.StatusInternalServerError, "failed to validate target folder", err)
+	}
+
+	task, err := s.uploadTasks.FindResumableBySignature(ctx, nil, userID, resolvedFolderID, in.FileName, in.FileSize, in.FileMD5, time.Now())
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return QueryUploadTaskOutput{Resumable: false}, nil
+		}
+		return QueryUploadTaskOutput{}, newAppError(http.StatusInternalServerError, "failed to query resumable task", err)
+	}
+
+	uploadedChunks := s.listUploadedChunks(ctx, task)
+	_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, task.UploadID, marshalUploadedChunks(uploadedChunks))
+
+	return QueryUploadTaskOutput{
+		Resumable:      true,
+		UploadID:       task.UploadID,
+		TotalChunks:    task.TotalChunks,
+		UploadedChunks: uploadedChunks,
+		Status:         task.Status,
+		ExpiresAt:      task.ExpiresAt,
+	}, nil
+}
+
+func (s *fileService) ListUploadTasks(ctx context.Context, userID uint) ([]UploadTaskListItemOutput, error) {
+	now := time.Now()
+	completedSince := now.Add(-uploadCompletedVisibleDuration())
+	tasks, err := s.uploadTasks.ListVisibleByUser(ctx, nil, userID, now, completedSince)
+	if err != nil {
+		return nil, newAppError(http.StatusInternalServerError, "failed to list upload tasks", err)
+	}
+
+	result := make([]UploadTaskListItemOutput, 0, len(tasks))
+	for _, task := range tasks {
+		uploadedChunks := s.listUploadedChunks(ctx, task)
+		uploadedCount := task.UploadedChunksCount
+		if len(uploadedChunks) > uploadedCount {
+			uploadedCount = len(uploadedChunks)
+		}
+		uploadedSize := task.UploadedSize
+		if task.Status == "completed" {
+			uploadedCount = task.TotalChunks
+			uploadedSize = task.FileSize
+		} else if len(uploadedChunks) > 0 {
+			uploadedSize = uploadedSizeByChunks(task, uploadedChunks)
+		}
+
+		result = append(result, UploadTaskListItemOutput{
+			UploadID:            task.UploadID,
+			FileName:            task.FileName,
+			FileSize:            task.FileSize,
+			FolderID:            task.FolderID,
+			TotalChunks:         task.TotalChunks,
+			UploadedChunksCount: uploadedCount,
+			UploadedSize:        uploadedSize,
+			Status:              task.Status,
+			LastError:           task.LastError,
+			UpdatedAt:           task.UpdatedAt,
+			CompletedAt:         task.CompletedAt,
+			ExpiresAt:           task.ExpiresAt,
+		})
+	}
+	return result, nil
+}
+
+func (s *fileService) GetUploadTaskDetail(ctx context.Context, userID uint, uploadID string) (UploadTaskDetailOutput, error) {
+	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return UploadTaskDetailOutput{}, newAppError(http.StatusNotFound, "upload task not found", nil)
+		}
+		return UploadTaskDetailOutput{}, newAppError(http.StatusInternalServerError, "failed to query upload task", err)
+	}
+
+	uploadedChunks := s.listUploadedChunks(ctx, task)
+	uploadedSize := task.UploadedSize
+	if task.Status == "completed" {
+		uploadedSize = task.FileSize
+	} else if len(uploadedChunks) > 0 {
+		uploadedSize = uploadedSizeByChunks(task, uploadedChunks)
+	}
+	_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, task.UploadID, marshalUploadedChunks(uploadedChunks))
+
+	return UploadTaskDetailOutput{
+		UploadID:       task.UploadID,
+		FileName:       task.FileName,
+		FileSize:       task.FileSize,
+		FileMD5:        task.FileMD5,
+		FolderID:       task.FolderID,
+		TotalChunks:    task.TotalChunks,
+		UploadedChunks: uploadedChunks,
+		UploadedSize:   uploadedSize,
+		Status:         task.Status,
+		LastError:      task.LastError,
+		ExpiresAt:      task.ExpiresAt,
+	}, nil
+}
+
+func (s *fileService) CancelUploadTask(ctx context.Context, userID uint, uploadID string) error {
+	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return newAppError(http.StatusNotFound, "upload task not found", nil)
+		}
+		return newAppError(http.StatusInternalServerError, "failed to query upload task", err)
+	}
+	if task.Status == "completed" {
+		return newAppError(http.StatusBadRequest, "cannot cancel completed task", nil)
+	}
+
+	if task.TempDir != "" {
+		_ = os.RemoveAll(task.TempDir)
+	}
+	if s.uploadProgress != nil {
+		_ = s.uploadProgress.Clear(ctx, uploadID)
+	}
+	if err := s.uploadTasks.DeleteByID(ctx, nil, task.ID); err != nil {
+		return newAppError(http.StatusInternalServerError, "failed to cancel upload task", err)
+	}
+	return nil
 }
 
 func chunkFilePath(tempDir string, chunkIndex int) string {
@@ -434,6 +607,77 @@ func chunkFilePath(tempDir string, chunkIndex int) string {
 func chunkFileExists(tempDir string, chunkIndex int) bool {
 	info, err := os.Stat(chunkFilePath(tempDir, chunkIndex))
 	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+func uploadTaskExpireDuration() time.Duration {
+	if config.AppConfig == nil {
+		return 7 * 24 * time.Hour
+	}
+	expireSeconds := config.AppConfig.Redis.UploadTaskExpire
+	if expireSeconds <= 0 {
+		expireSeconds = 7 * 24 * 60 * 60
+	}
+	return time.Duration(expireSeconds) * time.Second
+}
+
+func uploadCompletedVisibleDuration() time.Duration {
+	return 24 * time.Hour
+}
+
+func marshalUploadedChunks(chunks []int) string {
+	payload, err := json.Marshal(chunks)
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
+}
+
+func makeRangeChunks(total int) []int {
+	if total <= 0 {
+		return nil
+	}
+	result := make([]int, total)
+	for i := 0; i < total; i++ {
+		result[i] = i
+	}
+	return result
+}
+
+func uploadedSizeByChunks(task models.UploadTask, uploadedChunks []int) int64 {
+	if task.Status == "completed" {
+		return task.FileSize
+	}
+	if len(uploadedChunks) == 0 {
+		return 0
+	}
+
+	chunkSize := int64(5 * 1024 * 1024)
+	if config.AppConfig != nil && config.AppConfig.Storage.ChunkSize > 0 {
+		chunkSize = config.AppConfig.Storage.ChunkSize
+	}
+
+	var total int64
+	for _, chunkIndex := range uploadedChunks {
+		info, err := os.Stat(chunkFilePath(task.TempDir, chunkIndex))
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+			continue
+		}
+		if chunkIndex == task.TotalChunks-1 && task.FileSize > 0 {
+			lastChunkSize := task.FileSize % chunkSize
+			if lastChunkSize == 0 {
+				lastChunkSize = chunkSize
+			}
+			total += lastChunkSize
+		} else {
+			total += chunkSize
+		}
+	}
+
+	if task.FileSize > 0 && total > task.FileSize {
+		return task.FileSize
+	}
+	return total
 }
 
 func (s *fileService) listUploadedChunks(ctx context.Context, task models.UploadTask) []int {
@@ -490,7 +734,12 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 		}
 	}
 	if uploaded {
-		uploadedCount := int64(len(s.listUploadedChunks(ctx, task)))
+		uploadedChunks := s.listUploadedChunks(ctx, task)
+		uploadedCount := int64(len(uploadedChunks))
+		uploadedSize := uploadedSizeByChunks(task, uploadedChunks)
+		now := time.Now()
+		_ = s.uploadTasks.UpdateProgress(ctx, nil, uploadID, len(uploadedChunks), uploadedSize, now)
+		_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, uploadID, marshalUploadedChunks(uploadedChunks))
 		return UploadChunkOutput{
 			ChunkIndex:     chunkIndex,
 			UploadedChunks: uploadedCount,
@@ -522,30 +771,14 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 		_ = s.uploadProgress.AddChunk(ctx, uploadID, chunkIndex, config.AppConfig.Redis.UploadTaskExpire)
 	}
 
-	uploadedCount := int64(len(s.listUploadedChunks(ctx, task)))
+	uploadedChunks := s.listUploadedChunks(ctx, task)
+	uploadedCount := int64(len(uploadedChunks))
+	uploadedSize := uploadedSizeByChunks(task, uploadedChunks)
+	now := time.Now()
+	_ = s.uploadTasks.UpdateProgress(ctx, nil, uploadID, len(uploadedChunks), uploadedSize, now)
+	_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, uploadID, marshalUploadedChunks(uploadedChunks))
 
 	return UploadChunkOutput{ChunkIndex: chunkIndex, UploadedChunks: uploadedCount, TotalChunks: task.TotalChunks}, nil
-}
-
-func (s *fileService) GetUploadStatus(ctx context.Context, userID uint, uploadID string) (UploadStatusOutput, error) {
-	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return UploadStatusOutput{}, newAppError(http.StatusNotFound, "上传任务不存在", nil)
-		}
-		return UploadStatusOutput{}, newAppError(http.StatusInternalServerError, "查询上传任务失败", err)
-	}
-
-	uploadedChunks := s.listUploadedChunks(ctx, task)
-
-	return UploadStatusOutput{
-		UploadID:       uploadID,
-		FileName:       task.FileName,
-		FileSize:       task.FileSize,
-		TotalChunks:    task.TotalChunks,
-		UploadedChunks: uploadedChunks,
-		Status:         task.Status,
-	}, nil
 }
 
 func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID string) (models.File, error) {
@@ -644,14 +877,20 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 			if err := s.users.AddStorageUsed(ctx, tx, userID, task.FileSize); err != nil {
 				return err
 			}
-			return s.uploadTasks.UpdateStatus(ctx, tx, uploadID, "completed")
+			if err := s.uploadTasks.UpdateProgress(ctx, tx, uploadID, task.TotalChunks, task.FileSize, time.Now()); err != nil {
+				return err
+			}
+			return s.uploadTasks.MarkCompleted(ctx, tx, uploadID, time.Now())
 		})
 		if err != nil {
 			return models.File{}, newAppError(http.StatusInternalServerError, "failed to save file record", err)
 		}
+		_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, uploadID, marshalUploadedChunks(makeRangeChunks(task.TotalChunks)))
 		_ = os.Remove(finalPath)
 		_ = os.RemoveAll(task.TempDir)
-		_ = s.uploadProgress.Clear(ctx, uploadID)
+		if s.uploadProgress != nil {
+			_ = s.uploadProgress.Clear(ctx, uploadID)
+		}
 		fileRecord.FileObject = existingObj
 		return fileRecord, nil
 	}
@@ -705,7 +944,10 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 		if err := s.users.AddStorageUsed(ctx, tx, userID, task.FileSize); err != nil {
 			return err
 		}
-		return s.uploadTasks.UpdateStatus(ctx, tx, uploadID, "completed")
+		if err := s.uploadTasks.UpdateProgress(ctx, tx, uploadID, task.TotalChunks, task.FileSize, time.Now()); err != nil {
+			return err
+		}
+		return s.uploadTasks.MarkCompleted(ctx, tx, uploadID, time.Now())
 	})
 	if err != nil {
 		_ = os.Remove(finalPath)
@@ -715,8 +957,11 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 		return models.File{}, newAppError(http.StatusInternalServerError, "保存文件记录失败", err)
 	}
 
+	_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, uploadID, marshalUploadedChunks(makeRangeChunks(task.TotalChunks)))
 	_ = os.RemoveAll(task.TempDir)
-	_ = s.uploadProgress.Clear(ctx, uploadID)
+	if s.uploadProgress != nil {
+		_ = s.uploadProgress.Clear(ctx, uploadID)
+	}
 	fileRecord.FileObject = fileObj
 	return fileRecord, nil
 }

@@ -27,7 +27,7 @@ redis:
   port: 6379
   password: ""                    # Redis 密码（如果设置）
   db: 0                           # 数据库编号
-  upload_task_expire: 86400       # 上传任务过期时间（24小时）
+  upload_task_expire: 604800      # 上传任务过期时间（7天）
 
 jwt:
   secret: "your-secret-key-change-in-production"

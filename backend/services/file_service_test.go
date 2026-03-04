@@ -213,12 +213,76 @@ func (r *fakeUploadTaskRepo) GetByUploadIDAndUser(_ context.Context, _ *gorm.DB,
 	return task, nil
 }
 
+func (r *fakeUploadTaskRepo) FindResumableBySignature(_ context.Context, _ *gorm.DB, userID uint, folderID uint, fileName string, fileSize int64, fileMD5 string, now time.Time) (models.UploadTask, error) {
+	for _, task := range r.tasks {
+		if task.UserID != userID || task.FolderID != folderID || task.FileName != fileName || task.FileSize != fileSize || task.FileMD5 != fileMD5 {
+			continue
+		}
+		if !task.ExpiresAt.IsZero() && !task.ExpiresAt.After(now) {
+			continue
+		}
+		if task.Status == "completed" || task.Status == "canceled" || task.Status == "expired" {
+			continue
+		}
+		return task, nil
+	}
+	return models.UploadTask{}, gorm.ErrRecordNotFound
+}
+
+func (r *fakeUploadTaskRepo) ListVisibleByUser(_ context.Context, _ *gorm.DB, userID uint, _ time.Time, completedSince time.Time) ([]models.UploadTask, error) {
+	out := make([]models.UploadTask, 0)
+	for _, task := range r.tasks {
+		if task.UserID != userID {
+			continue
+		}
+		if task.Status == "completed" && (task.CompletedAt == nil || task.CompletedAt.Before(completedSince)) {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out, nil
+}
+
 func (r *fakeUploadTaskRepo) UpdateStatus(_ context.Context, _ *gorm.DB, uploadID string, status string) error {
 	task, ok := r.tasks[uploadID]
 	if !ok {
 		return gorm.ErrRecordNotFound
 	}
 	task.Status = status
+	r.tasks[uploadID] = task
+	return nil
+}
+
+func (r *fakeUploadTaskRepo) UpdateProgress(_ context.Context, _ *gorm.DB, uploadID string, uploadedChunksCount int, uploadedSize int64, lastChunkAt time.Time) error {
+	task, ok := r.tasks[uploadID]
+	if !ok {
+		return gorm.ErrRecordNotFound
+	}
+	task.UploadedChunksCount = uploadedChunksCount
+	task.UploadedSize = uploadedSize
+	task.Status = "uploading"
+	task.LastChunkAt = &lastChunkAt
+	r.tasks[uploadID] = task
+	return nil
+}
+
+func (r *fakeUploadTaskRepo) MarkCompleted(_ context.Context, _ *gorm.DB, uploadID string, completedAt time.Time) error {
+	task, ok := r.tasks[uploadID]
+	if !ok {
+		return gorm.ErrRecordNotFound
+	}
+	task.Status = "completed"
+	task.CompletedAt = &completedAt
+	r.tasks[uploadID] = task
+	return nil
+}
+
+func (r *fakeUploadTaskRepo) UpdateUploadedChunksSnapshot(_ context.Context, _ *gorm.DB, uploadID string, uploadedChunks string) error {
+	task, ok := r.tasks[uploadID]
+	if !ok {
+		return gorm.ErrRecordNotFound
+	}
+	task.UploadedChunks = uploadedChunks
 	r.tasks[uploadID] = task
 	return nil
 }

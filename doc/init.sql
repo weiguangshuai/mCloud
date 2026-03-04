@@ -71,16 +71,22 @@ CREATE TABLE upload_tasks (
     file_size BIGINT NOT NULL,
     file_md5 VARCHAR(32) NOT NULL,
     total_chunks INT NOT NULL,
-    uploaded_chunks TEXT COMMENT 'JSON数组，已上传分片索引',
-    status ENUM('pending', 'uploading', 'completed', 'failed') DEFAULT 'pending',
+    uploaded_chunks TEXT COMMENT 'JSON数组，已上传分片索引(快照备份)',
+    uploaded_chunks_count INT DEFAULT 0 COMMENT '已上传分片数量',
+    uploaded_size BIGINT DEFAULT 0 COMMENT '已上传字节数',
+    last_chunk_at TIMESTAMP NULL DEFAULT NULL COMMENT '最近一次上传分片时间',
+    completed_at TIMESTAMP NULL DEFAULT NULL COMMENT '任务完成时间',
+    last_error VARCHAR(500) DEFAULT '' COMMENT '最近错误信息',
+    status ENUM('pending', 'uploading', 'paused', 'completed', 'failed', 'canceled', 'expired') DEFAULT 'pending',
     temp_dir VARCHAR(500) COMMENT '临时文件存储目录',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP NOT NULL COMMENT '过期时间，24小时后',
+    expires_at TIMESTAMP NOT NULL COMMENT '过期时间，7天后',
     INDEX idx_upload_id (upload_id),
     INDEX idx_user_id (user_id),
     INDEX idx_expires_at (expires_at),
-    INDEX idx_status (status)
+    INDEX idx_status (status),
+    INDEX idx_completed_at (completed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE recycle_bin (

@@ -80,7 +80,12 @@ type UploadTaskRepository interface {
 	Create(ctx context.Context, tx *gorm.DB, task *models.UploadTask) error
 	GetByUploadID(ctx context.Context, tx *gorm.DB, uploadID string) (models.UploadTask, error)
 	GetByUploadIDAndUser(ctx context.Context, tx *gorm.DB, uploadID string, userID uint) (models.UploadTask, error)
+	FindResumableBySignature(ctx context.Context, tx *gorm.DB, userID uint, folderID uint, fileName string, fileSize int64, fileMD5 string, now time.Time) (models.UploadTask, error)
+	ListVisibleByUser(ctx context.Context, tx *gorm.DB, userID uint, now time.Time, completedSince time.Time) ([]models.UploadTask, error)
 	UpdateStatus(ctx context.Context, tx *gorm.DB, uploadID string, status string) error
+	UpdateProgress(ctx context.Context, tx *gorm.DB, uploadID string, uploadedChunksCount int, uploadedSize int64, lastChunkAt time.Time) error
+	MarkCompleted(ctx context.Context, tx *gorm.DB, uploadID string, completedAt time.Time) error
+	UpdateUploadedChunksSnapshot(ctx context.Context, tx *gorm.DB, uploadID string, uploadedChunks string) error
 	DeleteByID(ctx context.Context, tx *gorm.DB, id uint) error
 	ListExpiredAndUncompleted(ctx context.Context, tx *gorm.DB, now time.Time) ([]models.UploadTask, error)
 }

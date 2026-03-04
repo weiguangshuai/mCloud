@@ -21,6 +21,12 @@ export function initChunkedUpload(data) {
   })
 }
 
+export function queryUploadTask(data) {
+  return request.post('/files/upload/query', data, {
+    skipErrorMessage: true,
+  })
+}
+
 export function uploadChunk(formData, onProgress) {
   return request.post('/files/upload/chunk', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
@@ -37,8 +43,20 @@ export function completeUpload(data) {
   })
 }
 
-export function getUploadStatus(uploadId) {
-  return request.get(`/files/upload/status/${uploadId}`, {
+export function listUploadTasks() {
+  return request.get('/files/upload/tasks', {
+    skipErrorMessage: true,
+  })
+}
+
+export function getUploadTaskDetail(uploadId) {
+  return request.get(`/files/upload/tasks/${uploadId}`, {
+    skipErrorMessage: true,
+  })
+}
+
+export function cancelUploadTask(uploadId) {
+  return request.delete(`/files/upload/tasks/${uploadId}`, {
     skipErrorMessage: true,
   })
 }

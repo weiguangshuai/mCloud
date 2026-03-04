@@ -158,95 +158,105 @@ User -> Frontend: 选择大文件上传
 Frontend -> Frontend: 计算文件MD5\n作为唯一标识
 Frontend -> Frontend: 将文件分片\n(每片5MB)
 
-Frontend -> Backend: POST /api/files/upload/init\nAuthorization: Bearer <token>\nBody: {file_name, file_size, file_md5,\ntotal_chunks, folder_id}
+Frontend -> Backend: POST /api/files/upload/query\nAuthorization: Bearer <token>\nBody: {file_name, file_size, file_md5, folder_id}
 Backend -> Backend: JWT验证，提取user_id
+Backend -> DB: 查询 upload_tasks\n(user_id + folder_id + file_md5 + file_size)
+Backend -> Redis: 读取 uploaded_chunks
 
-' 配额检查
-Backend -> DB: SELECT storage_quota, storage_used\nFROM users WHERE id = ?
-DB --> Backend: 返回配额信息
-Backend -> Backend: 检查配额：\nstorage_used + file_size <= storage_quota
+alt 命中可续传任务
+    Backend --> Frontend: 返回{resumable: true,\nupload_id, total_chunks, uploaded_chunks}
+    Frontend -> Frontend: 跳过已上传分片，仅上传缺失分片
+else 未命中可续传任务
+    Frontend -> Backend: POST /api/files/upload/init\nAuthorization: Bearer <token>\nBody: {file_name, file_size, file_md5, folder_id}
+    Backend -> Backend: JWT验证，提取user_id
 
-alt 配额不足
-    Backend --> Frontend: 返回400错误\n{message: "存储空间不足",\nstorage_quota, storage_used,\navailable_space, required_space}
-    Frontend --> User: 显示配额不足提示
-else 配额充足
-    Backend -> DB: 检查用户范围内是否存在相同MD5\nSELECT fo.* FROM file_objects fo\nJOIN files f ON f.file_object_id = fo.id\nWHERE f.user_id = ? AND fo.file_md5 = ?\nAND f.deleted_at IS NULL
+    ' 配额检查
+    Backend -> DB: SELECT storage_quota, storage_used\nFROM users WHERE id = ?
+    DB --> Backend: 返回配额信息
+    Backend -> Backend: 检查配额：\nstorage_used + file_size <= storage_quota
 
-alt 文件已存在（秒传）
-    Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
-    Backend -> DB: UPDATE file_objects\nSET ref_count = ref_count + 1\nWHERE id = ?
-    Backend --> Frontend: 返回{upload_id, status: "completed"}
-    Frontend --> User: 显示秒传成功
-else 文件不存在，需要上传
-    Backend -> Backend: 生成upload_id (UUID)
-    Backend -> Redis: 存储上传任务信息\nKEY: upload:{upload_id}\nVALUE: {file_md5, total_chunks,\nuploaded_chunks: [], user_id, folder_id}\nEXPIRE: 24小时
-    Backend --> Frontend: 返回{upload_id, uploaded_chunks: []}
+    alt 配额不足
+        Backend --> Frontend: 返回400错误\n{message: "存储空间不足",\nstorage_quota, storage_used,\navailable_space, required_space}
+        Frontend --> User: 显示配额不足提示
+    else 配额充足
+        Backend -> DB: 检查用户范围内是否存在相同MD5\nSELECT fo.* FROM file_objects fo\nJOIN files f ON f.file_object_id = fo.id\nWHERE f.user_id = ? AND fo.file_md5 = ?\nAND f.deleted_at IS NULL
 
-    loop 上传每个分片
-        Frontend -> Backend: POST /api/files/upload/chunk\nAuthorization: Bearer <token>\nBody: FormData(upload_id, chunk_index,\nchunk_data, chunk_md5)
-        Backend -> Backend: JWT验证
-        Backend -> Redis: 获取上传任务信息
-
-        alt 分片已上传（断点续传）
-            Backend --> Frontend: 返回{status: "exists"}
-        else 分片未上传
-            Backend -> Backend: 验证chunk_md5
-            Backend -> FileSystem: 保存分片到临时目录\n{temp_path}/{upload_id}/chunk_{index}
-            Backend -> Redis: 更新uploaded_chunks列表\n添加chunk_index
-            Backend --> Frontend: 返回{status: "success",\nprogress: uploaded/total}
-            Frontend -> Frontend: 更新进度条
-            Frontend --> User: 显示上传进度 X%
+        alt 文件已存在（秒传）
+            Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
+            Backend -> DB: UPDATE file_objects\nSET ref_count = ref_count + 1\nWHERE id = ?
+            Backend --> Frontend: 返回{status: "instant_upload", file_id}
+            Frontend --> User: 显示秒传成功
+        else 文件不存在，需要初始化任务
+            Backend -> Backend: 生成upload_id (UUID)
+            Backend -> DB: INSERT INTO upload_tasks\n(status='uploading', expires_at=7天后)
+            Backend -> Redis: 初始化分片集合\nKEY: upload:{upload_id}:chunks\nEXPIRE: 7天
+            Backend --> Frontend: 返回{upload_id, total_chunks, chunk_size}
         end
     end
+end
 
-    Frontend -> Backend: POST /api/files/upload/complete\nAuthorization: Bearer <token>\nBody: {upload_id, file_md5}
+loop 上传每个缺失分片
+    Frontend -> Backend: POST /api/files/upload/chunk\nAuthorization: Bearer <token>\nBody: FormData(upload_id, chunk_index, chunk_data)
     Backend -> Backend: JWT验证
-    Backend -> Redis: 获取上传任务信息
-    Backend -> Backend: 验证所有分片已上传
+    Backend -> Redis: 检查分片是否已上传
 
-    Backend -> FileSystem: 合并所有分片\n生成完整文件
-    Backend -> Backend: 计算合并后文件MD5\n验证完���性
-    Backend -> FileSystem: 删除临时分片文件
-
-    alt 文件是图片
-        Backend -> Backend: 检测MIME类型
-        Backend -> ThumbService: 生成缩略图
-        ThumbService -> FileSystem: 读取原始图片
-        ThumbService -> ThumbService: 缩放处理
-        ThumbService -> FileSystem: 保存缩略图
-        ThumbService --> Backend: 返回缩略图路径
+    alt 分片已上传（断点续传）
+        Backend --> Frontend: 返回{status: "exists"}
+    else 分片未上传
+        Backend -> FileSystem: 保存分片到临时目录\n{temp_path}/{upload_id}/chunk_{index}
+        Backend -> Redis: SADD upload:{upload_id}:chunks chunk_index
+        Backend -> DB: 更新 upload_tasks\n(uploaded_chunks_count, uploaded_size, last_chunk_at)
+        Backend --> Frontend: 返回{status: "success", progress}
+        Frontend -> Frontend: 更新进度条
     end
+end
 
-    Backend -> DB: INSERT INTO file_objects\n(file_path, thumbnail_path, file_size,\nmime_type, file_md5, is_image)
-    Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
-    DB --> Backend: 返回file_id
-    Backend -> Redis: 删除上传任务信息
-    Backend --> Frontend: 返回文件信息
-    Frontend --> User: 显示上传完成
+Frontend -> Backend: POST /api/files/upload/complete\nAuthorization: Bearer <token>\nBody: {upload_id}
+Backend -> Backend: JWT验证
+Backend -> Redis: 获取上传分片状态
+Backend -> Backend: 验证所有分片已上传
+Backend -> FileSystem: 合并所有分片\n生成完整文件
+Backend -> Backend: 计算合并后文件MD5\n验证完整性
+Backend -> FileSystem: 删除临时分片文件
+
+alt 文件是图片
+    Backend -> Backend: 检测MIME类型
+    Backend -> ThumbService: 生成缩略图
+    ThumbService -> FileSystem: 读取原始图片
+    ThumbService -> ThumbService: 缩放处理
+    ThumbService -> FileSystem: 保存缩略图
+    ThumbService --> Backend: 返回缩略图路径
 end
-end
+
+Backend -> DB: INSERT INTO file_objects\n(file_path, thumbnail_path, file_size,\nmime_type, file_md5, is_image)
+Backend -> DB: INSERT INTO files\n(name, original_name, folder_id,\nuser_id, file_object_id)
+Backend -> DB: 更新 upload_tasks 状态为 completed\ncompleted_at=now
+Backend -> Redis: 删除上传任务分片信息
+Backend --> Frontend: 返回文件信息
+Frontend --> User: 显示上传完成
 
 == <b><size:14>断点续传 (网络中断后恢复)</size></b> ==
 
 User -> Frontend: 刷新页面或重新打开
-Frontend -> Frontend: 从localStorage读取\n未完成的upload_id
-Frontend -> Backend: GET /api/files/upload/status/{upload_id}\nAuthorization: Bearer <token>
+Frontend -> Backend: GET /api/files/upload/tasks\nAuthorization: Bearer <token>
 Backend -> Backend: JWT验证
-Backend -> Redis: 获取上传任务信息
+Backend -> DB: 查询未完成任务 + 24小时内已完成任务
+Backend --> Frontend: 返回任务列表
+Frontend --> User: 显示右下角传输列表
+User -> Frontend: 点击“继续上传”
+Frontend -> Backend: GET /api/files/upload/tasks/{upload_id}\nAuthorization: Bearer <token>
+Backend -> Backend: JWT验证并返回 uploaded_chunks
+Frontend -> Frontend: 优先尝试 File System Access API 恢复文件句柄
 
-alt 上传任务存在
-    Backend --> Frontend: 返回{uploaded_chunks: [0,1,2,5],\ntotal_chunks: 10}
-    Frontend -> Frontend: 计算未上传的分片\n[3,4,6,7,8,9]
-    Frontend --> User: 显示"继续上传"按钮
-    User -> Frontend: 点击继续上传
-    note right of Frontend
-        从未上传的分片继续
-        跳过已上传的分片
-    end note
-else 上传任务已过期
-    Backend --> Frontend: 返回404
-    Frontend --> User: 提示需要重新上传
+alt 自动恢复句柄成功
+    Frontend -> Frontend: 校验 file_size + md5
+else 自动恢复失败
+    Frontend --> User: 提示“请选择同一文件继续上传”
+    User -> Frontend: 重新选择同一文件
+    Frontend -> Frontend: 校验 file_size + md5
 end
+
+Frontend -> Frontend: 计算缺失分片并继续上传\n(跳过 uploaded_chunks)
 
 @enduml
 

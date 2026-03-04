@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"fmt"
@@ -102,6 +102,32 @@ func InitChunkedUpload(c *gin.Context) {
 	})
 }
 
+func QueryUploadTask(c *gin.Context) {
+	userID := c.GetUint("user_id")
+
+	var req struct {
+		FileName string `json:"file_name" binding:"required"`
+		FileSize int64  `json:"file_size" binding:"required"`
+		FileMD5  string `json:"file_md5" binding:"required"`
+		FolderID uint   `json:"folder_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.Error(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+
+	result, err := getServices().File.QueryUploadTask(c.Request.Context(), userID, services.QueryUploadTaskInput{
+		FileName: req.FileName,
+		FileSize: req.FileSize,
+		FileMD5:  req.FileMD5,
+		FolderID: req.FolderID,
+	})
+	if respondServiceError(c, err) {
+		return
+	}
+	utils.Success(c, result)
+}
+
 func UploadChunk(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	start := time.Now()
@@ -130,15 +156,35 @@ func UploadChunk(c *gin.Context) {
 	utils.Success(c, result)
 }
 
-func GetUploadStatus(c *gin.Context) {
-	uploadID := c.Param("upload_id")
+func ListUploadTasks(c *gin.Context) {
 	userID := c.GetUint("user_id")
 
-	result, err := getServices().File.GetUploadStatus(c.Request.Context(), userID, uploadID)
+	result, err := getServices().File.ListUploadTasks(c.Request.Context(), userID)
 	if respondServiceError(c, err) {
 		return
 	}
 	utils.Success(c, result)
+}
+
+func GetUploadTaskDetail(c *gin.Context) {
+	uploadID := c.Param("upload_id")
+	userID := c.GetUint("user_id")
+
+	result, err := getServices().File.GetUploadTaskDetail(c.Request.Context(), userID, uploadID)
+	if respondServiceError(c, err) {
+		return
+	}
+	utils.Success(c, result)
+}
+
+func CancelUploadTask(c *gin.Context) {
+	userID := c.GetUint("user_id")
+	uploadID := c.Param("upload_id")
+
+	if err := getServices().File.CancelUploadTask(c.Request.Context(), userID, uploadID); respondServiceError(c, err) {
+		return
+	}
+	utils.SuccessWithMessage(c, "upload task canceled", nil)
 }
 
 func CompleteUpload(c *gin.Context) {
