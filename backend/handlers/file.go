@@ -1,4 +1,4 @@
-package handlers
+﻿package handlers
 
 import (
 	"fmt"
@@ -93,7 +93,7 @@ func InitChunkedUpload(c *gin.Context) {
 		utils.SuccessWithMessage(c, "instant upload success", gin.H{"status": result.Status, "file_id": result.FileID})
 		return
 	}
-	logger.Debugf("[upload] init success user=%d upload_id=%s file=%q size=%d chunks=%d chunk_size=%d", userID, result.UploadID, req.FileName, req.FileSize, result.TotalChunks, result.ChunkSize)
+	logger.Infof("[upload] init success user=%d upload_id=%s file=%q size=%d chunks=%d chunk_size=%d", userID, result.UploadID, req.FileName, req.FileSize, result.TotalChunks, result.ChunkSize)
 
 	utils.Success(c, gin.H{
 		"upload_id":    result.UploadID,

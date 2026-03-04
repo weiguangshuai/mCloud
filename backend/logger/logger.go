@@ -30,10 +30,21 @@ func IsDebugEnabled() bool {
 	return logLevel.Load() == levelDebug
 }
 
+func IsInfoEnabled() bool {
+	return logLevel.Load() == levelInfo
+}
+
 func Debugf(format string, v ...any) {
 	if !IsDebugEnabled() {
 		return
 	}
 
 	log.Printf("[DEBUG] "+format, v...)
+}
+
+func Infof(format string, v ...any) {
+	if !IsInfoEnabled() {
+		return
+	}
+	log.Printf("[INFO] "+format, v...)
 }
