@@ -7,12 +7,15 @@ import (
 	"mcloud/config"
 )
 
+// sanitizeFilename 对用户文件名做最小化清洗，避免路径穿越。
 func sanitizeFilename(name string) string {
+	// 仅保留文件名并替换目录穿越相关字符，避免写入越界路径。
 	name = filepath.Base(name)
 	replacer := strings.NewReplacer("..", "_", "/", "_", "\\", "_")
 	return replacer.Replace(name)
 }
 
+// isFileExtensionAllowed 按配置校验扩展名；为空时默认放行全部类型。
 func isFileExtensionAllowed(fileName string) bool {
 	allowed := config.AppConfig.Storage.AllowedExtensions
 	if len(allowed) == 0 {
@@ -39,6 +42,7 @@ func isFileExtensionAllowed(fileName string) bool {
 	return false
 }
 
+// getMimeType 根据扩展名返回常用 MIME，未命中时回退为二进制流。
 func getMimeType(ext string) string {
 	mimeTypes := map[string]string{
 		".jpg":  "image/jpeg",

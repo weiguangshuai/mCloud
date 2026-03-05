@@ -25,11 +25,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// FileListOutput 为文件列表查询返回体。
 type FileListOutput struct {
 	Files      []models.File        `json:"files"`
 	Pagination utils.PaginationData `json:"pagination"`
 }
 
+// InitChunkedUploadInput 定义分片上传初始化参数。
 type InitChunkedUploadInput struct {
 	FileName string
 	FileSize int64
@@ -37,6 +39,7 @@ type InitChunkedUploadInput struct {
 	FolderID uint
 }
 
+// InitChunkedUploadOutput 返回分片策略与上传任务信息。
 type InitChunkedUploadOutput struct {
 	UploadID    string `json:"upload_id,omitempty"`
 	ChunkSize   int64  `json:"chunk_size,omitempty"`
@@ -45,6 +48,7 @@ type InitChunkedUploadOutput struct {
 	FileID      uint   `json:"file_id,omitempty"`
 }
 
+// QueryUploadTaskInput 定义断点续传探测参数。
 type QueryUploadTaskInput struct {
 	FileName string
 	FileSize int64
@@ -52,6 +56,7 @@ type QueryUploadTaskInput struct {
 	FolderID uint
 }
 
+// QueryUploadTaskOutput 返回断点续传探测结果。
 type QueryUploadTaskOutput struct {
 	Resumable      bool      `json:"resumable"`
 	UploadID       string    `json:"upload_id,omitempty"`
@@ -61,6 +66,7 @@ type QueryUploadTaskOutput struct {
 	ExpiresAt      time.Time `json:"expires_at,omitempty"`
 }
 
+// UploadChunkOutput 返回单个分片上传后的进度快照。
 type UploadChunkOutput struct {
 	ChunkIndex     int    `json:"chunk_index"`
 	UploadedChunks int64  `json:"uploaded_chunks"`
@@ -68,6 +74,7 @@ type UploadChunkOutput struct {
 	Message        string `json:"message,omitempty"`
 }
 
+// UploadTaskListItemOutput 为上传任务列表项。
 type UploadTaskListItemOutput struct {
 	UploadID            string     `json:"upload_id"`
 	FileName            string     `json:"file_name"`
@@ -83,6 +90,7 @@ type UploadTaskListItemOutput struct {
 	ExpiresAt           time.Time  `json:"expires_at"`
 }
 
+// UploadTaskDetailOutput 为上传任务详情视图。
 type UploadTaskDetailOutput struct {
 	UploadID       string    `json:"upload_id"`
 	FileName       string    `json:"file_name"`
@@ -97,6 +105,7 @@ type UploadTaskDetailOutput struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
+// FileAccessOutput 封装下载/预览所需的文件访问信息。
 type FileAccessOutput struct {
 	File         models.File
 	AbsPath      string
@@ -104,10 +113,12 @@ type FileAccessOutput struct {
 	DownloadName string
 }
 
+// ThumbnailBatchOutput 批量缩略图查询结果。
 type ThumbnailBatchOutput struct {
 	Items []map[string]interface{} `json:"items"`
 }
 
+// FileService 定义文件管理能力：上传、断点续传、访问与回收站联动。
 type FileService interface {
 	ListFiles(ctx context.Context, userID uint, folderID uint, page int, pageSize int, sortBy string, order string) (FileListOutput, error)
 	UploadFile(ctx context.Context, userID uint, folderID uint, file multipart.File, header *multipart.FileHeader) (models.File, error)
@@ -129,6 +140,7 @@ type FileService interface {
 	BatchGetThumbnails(ctx context.Context, userID uint, fileIDs []uint) (ThumbnailBatchOutput, error)
 }
 
+// fileService 为 FileService 的默认实现。
 type fileService struct {
 	txManager      TxManager
 	users          repositories.UserRepository
@@ -141,6 +153,7 @@ type fileService struct {
 	resolver       folderResolver
 }
 
+// NewFileService 创建文件服务并注入依赖仓储。
 func NewFileService(
 	txManager TxManager,
 	users repositories.UserRepository,
@@ -164,6 +177,7 @@ func NewFileService(
 	}
 }
 
+// ListFiles 按目录分页查询文件，并统一处理排序与分页参数兜底。
 func (s *fileService) ListFiles(ctx context.Context, userID uint, folderID uint, page int, pageSize int, sortBy string, order string) (FileListOutput, error) {
 	if page < 1 {
 		page = 1
@@ -174,6 +188,7 @@ func (s *fileService) ListFiles(ctx context.Context, userID uint, folderID uint,
 
 	allowedSortFields := map[string]bool{"name": true, "created_at": true, "file_size": true}
 	if !allowedSortFields[sortBy] {
+		// 非白名单排序字段统一回退，避免拼接非法 SQL 字段。
 		sortBy = "created_at"
 	}
 	if order != "asc" && order != "desc" {
@@ -194,6 +209,7 @@ func (s *fileService) ListFiles(ctx context.Context, userID uint, folderID uint,
 	}
 
 	includeLegacyRoot := resolvedFolderID == rootFolder.ID
+	// 根目录查询兼容历史“旧根目录”数据。
 	total, err := s.files.CountByFolder(ctx, nil, userID, resolvedFolderID, rootFolder.ID, includeLegacyRoot)
 	if err != nil {
 		return FileListOutput{}, newAppError(http.StatusInternalServerError, "查询文件总数失败", err)
@@ -231,6 +247,7 @@ func (s *fileService) ListFiles(ctx context.Context, userID uint, folderID uint,
 	}, nil
 }
 
+// UploadFile 处理普通表单上传，支持基于 MD5 的秒传复用。
 func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint, file multipart.File, header *multipart.FileHeader) (models.File, error) {
 	if header.Size > config.AppConfig.Storage.MaxFileSize {
 		return models.File{}, newAppError(http.StatusBadRequest, "文件大小超出限制", nil)
@@ -276,6 +293,7 @@ func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint
 
 	existingObj, err := s.fileObjects.GetByMD5(ctx, nil, fileMD5)
 	if err == nil {
+		// 命中重复内容时仅新增逻辑文件记录并增加引用计数，不重复落盘。
 		fileRecord := models.File{
 			Name:         filepath.Base(existingObj.FilePath),
 			OriginalName: header.Filename,
@@ -327,6 +345,7 @@ func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint
 	var thumbnailPath string
 	var width, height int
 	if isImage {
+		// 缩略图生成失败不阻断主流程，仅影响附加能力。
 		w, h, dimErr := GetImageDimensions(absPath)
 		if dimErr == nil {
 			width, height = w, h
@@ -364,6 +383,7 @@ func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint
 	}
 
 	err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
+		// 文件对象、逻辑文件记录、配额占用必须保持事务一致性。
 		if err := s.fileObjects.Create(ctx, tx, &fileObj); err != nil {
 			return err
 		}
@@ -385,6 +405,7 @@ func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint
 	return fileRecord, nil
 }
 
+// InitChunkedUpload 初始化分片上传任务；若命中 MD5 则直接秒传完成。
 func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in InitChunkedUploadInput) (InitChunkedUploadOutput, error) {
 	if !isFileExtensionAllowed(in.FileName) {
 		return InitChunkedUploadOutput{}, newAppError(http.StatusBadRequest, "不支持的文件类型", nil)
@@ -413,6 +434,7 @@ func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in Ini
 
 	existingObj, err := s.fileObjects.GetByMD5(ctx, nil, in.FileMD5)
 	if err == nil {
+		// 秒传场景下仍要新增用户文件记录并累计空间占用。
 		var newFile models.File
 		err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
 			if err := s.fileObjects.IncrementRefCount(ctx, tx, existingObj.ID); err != nil {
@@ -468,6 +490,7 @@ func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in Ini
 	return InitChunkedUploadOutput{UploadID: uploadID, ChunkSize: chunkSize, TotalChunks: totalChunks}, nil
 }
 
+// QueryUploadTask 根据文件签名查询是否存在可续传任务。
 func (s *fileService) QueryUploadTask(ctx context.Context, userID uint, in QueryUploadTaskInput) (QueryUploadTaskOutput, error) {
 	if !isFileExtensionAllowed(in.FileName) {
 		return QueryUploadTaskOutput{}, newAppError(http.StatusBadRequest, "unsupported file type", nil)
@@ -490,6 +513,7 @@ func (s *fileService) QueryUploadTask(ctx context.Context, userID uint, in Query
 	}
 
 	uploadedChunks := s.listUploadedChunks(ctx, task)
+	// 刷新已上传分片快照，便于前端快速恢复状态。
 	_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, task.UploadID, marshalUploadedChunks(uploadedChunks))
 
 	return QueryUploadTaskOutput{
@@ -502,6 +526,7 @@ func (s *fileService) QueryUploadTask(ctx context.Context, userID uint, in Query
 	}, nil
 }
 
+// ListUploadTasks 返回当前用户可见的上传任务列表。
 func (s *fileService) ListUploadTasks(ctx context.Context, userID uint) ([]UploadTaskListItemOutput, error) {
 	now := time.Now()
 	completedSince := now.Add(-uploadCompletedVisibleDuration())
@@ -512,6 +537,7 @@ func (s *fileService) ListUploadTasks(ctx context.Context, userID uint) ([]Uploa
 
 	result := make([]UploadTaskListItemOutput, 0, len(tasks))
 	for _, task := range tasks {
+		// 以磁盘/进度存储实际分片为准修正展示进度，降低状态漂移。
 		uploadedChunks := s.listUploadedChunks(ctx, task)
 		uploadedCount := task.UploadedChunksCount
 		if len(uploadedChunks) > uploadedCount {
@@ -543,6 +569,7 @@ func (s *fileService) ListUploadTasks(ctx context.Context, userID uint) ([]Uploa
 	return result, nil
 }
 
+// GetUploadTaskDetail 返回上传任务明细与已上传分片。
 func (s *fileService) GetUploadTaskDetail(ctx context.Context, userID uint, uploadID string) (UploadTaskDetailOutput, error) {
 	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
 	if err != nil {
@@ -576,6 +603,7 @@ func (s *fileService) GetUploadTaskDetail(ctx context.Context, userID uint, uplo
 	}, nil
 }
 
+// CancelUploadTask 取消未完成任务并清理临时数据。
 func (s *fileService) CancelUploadTask(ctx context.Context, userID uint, uploadID string) error {
 	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
 	if err != nil {
@@ -589,6 +617,7 @@ func (s *fileService) CancelUploadTask(ctx context.Context, userID uint, uploadI
 	}
 
 	if task.TempDir != "" {
+		// 取消任务时尽量释放临时目录，失败不阻断主逻辑。
 		_ = os.RemoveAll(task.TempDir)
 	}
 	if s.uploadProgress != nil {
@@ -600,15 +629,18 @@ func (s *fileService) CancelUploadTask(ctx context.Context, userID uint, uploadI
 	return nil
 }
 
+// chunkFilePath 返回分片在临时目录中的文件路径。
 func chunkFilePath(tempDir string, chunkIndex int) string {
 	return filepath.Join(tempDir, fmt.Sprintf("chunk_%d", chunkIndex))
 }
 
+// chunkFileExists 判断分片文件是否已落盘且大小有效。
 func chunkFileExists(tempDir string, chunkIndex int) bool {
 	info, err := os.Stat(chunkFilePath(tempDir, chunkIndex))
 	return err == nil && !info.IsDir() && info.Size() > 0
 }
 
+// uploadTaskExpireDuration 获取分片任务过期时间，配置异常时使用默认值。
 func uploadTaskExpireDuration() time.Duration {
 	if config.AppConfig == nil {
 		return 7 * 24 * time.Hour
@@ -620,10 +652,12 @@ func uploadTaskExpireDuration() time.Duration {
 	return time.Duration(expireSeconds) * time.Second
 }
 
+// uploadCompletedVisibleDuration 定义已完成任务在列表中的展示窗口。
 func uploadCompletedVisibleDuration() time.Duration {
 	return 24 * time.Hour
 }
 
+// marshalUploadedChunks 将分片索引序列编码为 JSON 文本。
 func marshalUploadedChunks(chunks []int) string {
 	payload, err := json.Marshal(chunks)
 	if err != nil {
@@ -632,6 +666,7 @@ func marshalUploadedChunks(chunks []int) string {
 	return string(payload)
 }
 
+// makeRangeChunks 生成 [0, total) 的连续分片索引列表。
 func makeRangeChunks(total int) []int {
 	if total <= 0 {
 		return nil
@@ -643,6 +678,7 @@ func makeRangeChunks(total int) []int {
 	return result
 }
 
+// uploadedSizeByChunks 根据已上传分片估算进度字节数。
 func uploadedSizeByChunks(task models.UploadTask, uploadedChunks []int) int64 {
 	if task.Status == "completed" {
 		return task.FileSize
@@ -663,6 +699,7 @@ func uploadedSizeByChunks(task models.UploadTask, uploadedChunks []int) int64 {
 			total += info.Size()
 			continue
 		}
+		// 磁盘不存在分片时退化为按配置分片大小估算。
 		if chunkIndex == task.TotalChunks-1 && task.FileSize > 0 {
 			lastChunkSize := task.FileSize % chunkSize
 			if lastChunkSize == 0 {
@@ -680,6 +717,7 @@ func uploadedSizeByChunks(task models.UploadTask, uploadedChunks []int) int64 {
 	return total
 }
 
+// listUploadedChunks 聚合进度存储与磁盘状态，返回去重后的分片索引。
 func (s *fileService) listUploadedChunks(ctx context.Context, task models.UploadTask) []int {
 	if task.TotalChunks <= 0 {
 		return nil
@@ -697,6 +735,7 @@ func (s *fileService) listUploadedChunks(ctx context.Context, task models.Upload
 		}
 	}
 
+	// 按分片序号顺序写入，保证最终文件字节顺序正确。
 	for i := 0; i < task.TotalChunks; i++ {
 		if chunkFileExists(task.TempDir, i) {
 			chunkSet[i] = struct{}{}
@@ -711,6 +750,7 @@ func (s *fileService) listUploadedChunks(ctx context.Context, task models.Upload
 	return result
 }
 
+// UploadChunk 写入单个分片并返回最新进度，重复上传同一分片可幂等返回。
 func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID string, chunkIndex int, chunk multipart.File) (UploadChunkOutput, error) {
 	task, err := s.uploadTasks.GetByUploadID(ctx, nil, uploadID)
 	if err != nil {
@@ -734,6 +774,7 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 		}
 	}
 	if uploaded {
+		// 分片已存在时直接回传进度，避免客户端重试造成重复写盘。
 		uploadedChunks := s.listUploadedChunks(ctx, task)
 		uploadedCount := int64(len(uploadedChunks))
 		uploadedSize := uploadedSizeByChunks(task, uploadedChunks)
@@ -768,6 +809,7 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 	}
 
 	if s.uploadProgress != nil {
+		// Redis 进度记录仅用于加速查询，失败时不影响上传成功语义。
 		_ = s.uploadProgress.AddChunk(ctx, uploadID, chunkIndex, config.AppConfig.Redis.UploadTaskExpire)
 	}
 
@@ -781,6 +823,7 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 	return UploadChunkOutput{ChunkIndex: chunkIndex, UploadedChunks: uploadedCount, TotalChunks: task.TotalChunks}, nil
 }
 
+// CompleteUpload 合并全部分片并落库为正式文件记录。
 func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID string) (models.File, error) {
 	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
 	if err != nil {
@@ -798,6 +841,7 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 		return models.File{}, newAppError(http.StatusInternalServerError, "校验目标文件夹失败", err)
 	}
 
+	// 必须确保全部分片齐全后才允许合并。
 	uploadedCount := int64(len(s.listUploadedChunks(ctx, task)))
 	if int(uploadedCount) < task.TotalChunks {
 		return models.File{}, newAppError(http.StatusBadRequest, fmt.Sprintf("分片未全部上传，已上传 %d/%d", uploadedCount, task.TotalChunks), nil)
@@ -852,12 +896,14 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 	}
 	_ = finalFile.Close()
 
+	// 合并完成后校验 MD5，防止落库损坏文件。
 	actualMD5 := hex.EncodeToString(hasher.Sum(nil))
 	if actualMD5 != task.FileMD5 {
 		_ = os.Remove(finalPath)
 		return models.File{}, newAppError(http.StatusBadRequest, "文件完整性校验失败，MD5不匹配", nil)
 	}
 
+	// 合并后若命中已有对象则走复用路径，避免重复存储。
 	existingObj, err := s.fileObjects.GetByMD5(ctx, nil, task.FileMD5)
 	if err == nil {
 		fileRecord := models.File{
@@ -899,6 +945,7 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 		return models.File{}, newAppError(http.StatusInternalServerError, "failed to check duplicate file", err)
 	}
 
+	// 图片文件尝试生成缩略图与尺寸元数据，失败不阻断主流程。
 	isImage := IsImageFile(task.FileName)
 	var thumbnailPath string
 	var width, height int
@@ -966,6 +1013,7 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 	return fileRecord, nil
 }
 
+// getFileAccessInfo 统一查询访问文件所需元信息并校验物理文件存在。
 func (s *fileService) getFileAccessInfo(ctx context.Context, userID uint, fileID uint) (FileAccessOutput, error) {
 	file, err := s.files.GetByIDAndUser(ctx, nil, fileID, userID, true)
 	if err != nil {
@@ -983,14 +1031,17 @@ func (s *fileService) getFileAccessInfo(ctx context.Context, userID uint, fileID
 	return FileAccessOutput{File: file, AbsPath: absPath, ContentType: file.FileObject.MimeType, DownloadName: file.OriginalName}, nil
 }
 
+// GetDownloadInfo 返回下载接口所需信息。
 func (s *fileService) GetDownloadInfo(ctx context.Context, userID uint, fileID uint) (FileAccessOutput, error) {
 	return s.getFileAccessInfo(ctx, userID, fileID)
 }
 
+// GetPreviewInfo 返回在线预览接口所需信息。
 func (s *fileService) GetPreviewInfo(ctx context.Context, userID uint, fileID uint) (FileAccessOutput, error) {
 	return s.getFileAccessInfo(ctx, userID, fileID)
 }
 
+// GetThumbnailInfo 返回缩略图文件路径与内容类型。
 func (s *fileService) GetThumbnailInfo(ctx context.Context, userID uint, fileID uint) (FileAccessOutput, error) {
 	file, err := s.files.GetByIDAndUser(ctx, nil, fileID, userID, true)
 	if err != nil {
@@ -1009,6 +1060,7 @@ func (s *fileService) GetThumbnailInfo(ctx context.Context, userID uint, fileID 
 	return FileAccessOutput{File: file, AbsPath: absPath, ContentType: "image/jpeg"}, nil
 }
 
+// DeleteFile 删除单个文件；回收站开启时先写入回收快照。
 func (s *fileService) DeleteFile(ctx context.Context, userID uint, fileID uint) error {
 	file, err := s.files.GetByIDAndUser(ctx, nil, fileID, userID, true)
 	if err != nil {
@@ -1020,6 +1072,7 @@ func (s *fileService) DeleteFile(ctx context.Context, userID uint, fileID uint) 
 
 	err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
 		if config.AppConfig.RecycleBin.Enabled {
+			// 回收快照保存文件对象关键信息，供恢复和彻删流程复用。
 			metadata, _ := json.Marshal(map[string]interface{}{
 				"mime_type":      file.FileObject.MimeType,
 				"thumbnail_path": file.FileObject.ThumbnailPath,
@@ -1054,6 +1107,7 @@ func (s *fileService) DeleteFile(ctx context.Context, userID uint, fileID uint) 
 	return nil
 }
 
+// RenameFile 更新文件展示名，不改变底层存储对象。
 func (s *fileService) RenameFile(ctx context.Context, userID uint, fileID uint, name string) (models.File, error) {
 	file, err := s.files.GetByIDAndUser(ctx, nil, fileID, userID, false)
 	if err != nil {
@@ -1069,6 +1123,7 @@ func (s *fileService) RenameFile(ctx context.Context, userID uint, fileID uint, 
 	return file, nil
 }
 
+// MoveFile 将文件移动到指定目录。
 func (s *fileService) MoveFile(ctx context.Context, userID uint, fileID uint, folderID uint) error {
 	if _, err := s.files.GetByIDAndUser(ctx, nil, fileID, userID, false); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1091,6 +1146,7 @@ func (s *fileService) MoveFile(ctx context.Context, userID uint, fileID uint, fo
 	return nil
 }
 
+// BatchDeleteFiles 批量删除文件；遇到不存在文件时跳过。
 func (s *fileService) BatchDeleteFiles(ctx context.Context, userID uint, fileIDs []uint) error {
 	err := s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
 		for _, fileID := range fileIDs {
@@ -1102,6 +1158,7 @@ func (s *fileService) BatchDeleteFiles(ctx context.Context, userID uint, fileIDs
 				return err
 			}
 			if config.AppConfig.RecycleBin.Enabled {
+				// 批量删除与单删保持一致：先写回收站记录再软删除。
 				metadata, _ := json.Marshal(map[string]interface{}{
 					"mime_type":      file.FileObject.MimeType,
 					"is_image":       file.FileObject.IsImage,
@@ -1137,6 +1194,7 @@ func (s *fileService) BatchDeleteFiles(ctx context.Context, userID uint, fileIDs
 	return nil
 }
 
+// BatchMoveFiles 批量移动文件到同一目标目录。
 func (s *fileService) BatchMoveFiles(ctx context.Context, userID uint, fileIDs []uint, folderID uint) error {
 	resolvedFolderID, err := s.resolver.resolveFolderIDForUser(ctx, nil, userID, folderID)
 	if err != nil {
@@ -1152,6 +1210,7 @@ func (s *fileService) BatchMoveFiles(ctx context.Context, userID uint, fileIDs [
 	return nil
 }
 
+// BatchGetThumbnails 批量查询缩略图可用性并保持入参顺序。
 func (s *fileService) BatchGetThumbnails(ctx context.Context, userID uint, fileIDs []uint) (ThumbnailBatchOutput, error) {
 	fileRecords, err := s.files.GetByIDsAndUser(ctx, nil, userID, fileIDs, true)
 	if err != nil {

@@ -15,15 +15,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// FolderService 定义目录管理能力。
 type FolderService interface {
+	// GetOrCreateRootFolder 获取或初始化用户根目录。
 	GetOrCreateRootFolder(ctx context.Context, userID uint) (models.Folder, error)
+	// ResolveFolderID 解析目标目录，folderID=0 时返回根目录。
 	ResolveFolderID(ctx context.Context, userID uint, folderID uint) (uint, error)
+	// ListFolders 查询某个父目录下的子目录列表。
 	ListFolders(ctx context.Context, userID uint, parentID *uint) ([]models.Folder, error)
+	// CreateFolder 在指定父目录下创建子目录。
 	CreateFolder(ctx context.Context, userID uint, name string, parentID uint) (models.Folder, error)
+	// RenameFolder 重命名目录并同步更新全部后代路径。
 	RenameFolder(ctx context.Context, userID uint, folderID uint, name string) (models.Folder, error)
+	// DeleteFolder 删除目录（开启回收站时为软删除）。
 	DeleteFolder(ctx context.Context, userID uint, folderID uint) error
 }
 
+// folderService 为 FolderService 的默认实现。
 type folderService struct {
 	txManager TxManager
 	folders   repositories.FolderRepository
@@ -32,6 +40,7 @@ type folderService struct {
 	resolver  folderResolver
 }
 
+// NewFolderService 创建目录服务实例。
 func NewFolderService(
 	txManager TxManager,
 	folders repositories.FolderRepository,
@@ -47,6 +56,7 @@ func NewFolderService(
 	}
 }
 
+// GetOrCreateRootFolder 获取用户根目录，不存在时自动补建。
 func (s *folderService) GetOrCreateRootFolder(ctx context.Context, userID uint) (models.Folder, error) {
 	root, err := s.resolver.getOrCreateUserRootFolder(ctx, nil, userID)
 	if err != nil {
@@ -55,6 +65,7 @@ func (s *folderService) GetOrCreateRootFolder(ctx context.Context, userID uint) 
 	return root, nil
 }
 
+// ResolveFolderID 将输入目录 ID 解析为当前用户可访问目录。
 func (s *folderService) ResolveFolderID(ctx context.Context, userID uint, folderID uint) (uint, error) {
 	resolved, err := s.resolver.resolveFolderIDForUser(ctx, nil, userID, folderID)
 	if err != nil {
@@ -66,12 +77,14 @@ func (s *folderService) ResolveFolderID(ctx context.Context, userID uint, folder
 	return resolved, nil
 }
 
+// ListFolders 查询父目录下的子目录列表。
 func (s *folderService) ListFolders(ctx context.Context, userID uint, parentID *uint) ([]models.Folder, error) {
 	rootFolder, err := s.resolver.getOrCreateUserRootFolder(ctx, nil, userID)
 	if err != nil {
 		return nil, newAppError(http.StatusInternalServerError, "获取根目录失败", err)
 	}
 
+	// 未传 parentID 时默认列根目录下内容。
 	targetParentID := rootFolder.ID
 	if parentID != nil {
 		resolvedParentID, err := s.resolver.resolveFolderIDForUser(ctx, nil, userID, *parentID)
@@ -84,6 +97,7 @@ func (s *folderService) ListFolders(ctx context.Context, userID uint, parentID *
 		targetParentID = resolvedParentID
 	}
 
+	// 兼容历史数据：根目录下可能存在 legacy root 标记数据。
 	includeLegacyRoot := targetParentID == rootFolder.ID
 	list, err := s.folders.ListByParent(ctx, nil, userID, targetParentID, includeLegacyRoot)
 	if err != nil {
@@ -92,6 +106,7 @@ func (s *folderService) ListFolders(ctx context.Context, userID uint, parentID *
 	return list, nil
 }
 
+// CreateFolder 在指定父目录下创建新目录。
 func (s *folderService) CreateFolder(ctx context.Context, userID uint, name string, parentID uint) (models.Folder, error) {
 	resolvedParentID, err := s.resolver.resolveFolderIDForUser(ctx, nil, userID, parentID)
 	if err != nil {
@@ -109,6 +124,7 @@ func (s *folderService) CreateFolder(ctx context.Context, userID uint, name stri
 		return models.Folder{}, newAppError(http.StatusInternalServerError, "查询父文件夹失败", err)
 	}
 
+	// 同父目录下不允许重名。
 	count, err := s.folders.CountByParentAndName(ctx, nil, userID, resolvedParentID, name, 0)
 	if err != nil {
 		return models.Folder{}, newAppError(http.StatusInternalServerError, "检查文件夹重名失败", err)
@@ -131,6 +147,7 @@ func (s *folderService) CreateFolder(ctx context.Context, userID uint, name stri
 	return folder, nil
 }
 
+// RenameFolder 重命名目录并同步更新后代路径。
 func (s *folderService) RenameFolder(ctx context.Context, userID uint, folderID uint, name string) (models.Folder, error) {
 	folder, err := s.folders.GetByIDAndUser(ctx, nil, folderID, userID)
 	if err != nil {
@@ -139,6 +156,7 @@ func (s *folderService) RenameFolder(ctx context.Context, userID uint, folderID 
 		}
 		return models.Folder{}, newAppError(http.StatusInternalServerError, "查询文件夹失败", err)
 	}
+	// 根目录名称固定，不允许改名。
 	if folder.IsRoot != nil && *folder.IsRoot {
 		return models.Folder{}, newAppError(http.StatusBadRequest, "根目录不允许重命名", nil)
 	}
@@ -170,6 +188,7 @@ func (s *folderService) RenameFolder(ctx context.Context, userID uint, folderID 
 	}
 	newPath := buildChildFolderPath(parentPath, name)
 
+	// 先更新当前目录路径，再级联更新全部后代路径前缀。
 	if err := s.folders.UpdateByID(ctx, nil, folder.ID, map[string]interface{}{"name": name, "path": newPath}); err != nil {
 		return models.Folder{}, newAppError(http.StatusInternalServerError, "重命名失败", err)
 	}
@@ -193,6 +212,7 @@ func (s *folderService) RenameFolder(ctx context.Context, userID uint, folderID 
 	return folder, nil
 }
 
+// DeleteFolder 删除目录；开启回收站时会保留恢复所需快照。
 func (s *folderService) DeleteFolder(ctx context.Context, userID uint, folderID uint) error {
 	folder, err := s.folders.GetByIDAndUser(ctx, nil, folderID, userID)
 	if err != nil {
@@ -201,12 +221,14 @@ func (s *folderService) DeleteFolder(ctx context.Context, userID uint, folderID 
 		}
 		return newAppError(http.StatusInternalServerError, "查询文件夹失败", err)
 	}
+	// 根目录是租户隔离锚点，禁止删除。
 	if folder.IsRoot != nil && *folder.IsRoot {
 		return newAppError(http.StatusBadRequest, "根目录不允许删除", nil)
 	}
 
 	err = s.txManager.WithTransaction(ctx, func(tx *gorm.DB) error {
 		if config.AppConfig.RecycleBin.Enabled {
+			// 开启回收站时先写入回收记录，再统一软删除目录及其子孙文件。
 			parentIDVal := uint(0)
 			if folder.ParentID != nil {
 				parentIDVal = *folder.ParentID
