@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="folder-tree">
     <el-tree
       ref="treeRef"
@@ -10,11 +10,12 @@
       highlight-current
       :expand-on-click-node="false"
       @node-click="handleNodeClick"
+      class="dark-tree"
     >
       <template #default="{ data }">
         <div class="node-content">
-          <el-icon><Folder /></el-icon>
-          <span>{{ data.name }}</span>
+          <el-icon class="folder-icon"><Folder /></el-icon>
+          <span class="node-label">{{ data.name }}</span>
         </div>
       </template>
     </el-tree>
@@ -106,11 +107,70 @@ watch(
 
 <style scoped>
 .folder-tree {
-  padding: 4px;
+  padding: 8px 4px;
+  flex: 1;
+  overflow-y: auto;
 }
+
 .node-content {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 4px 0;
+}
+
+.folder-icon {
+  color: var(--accent-hover);
+  font-size: 16px;
+}
+
+.node-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: color var(--transition-fast);
+}
+
+/* 树形控件样式覆盖 */
+:deep(.dark-tree) {
+  background: transparent !important;
+}
+
+:deep(.dark-tree .el-tree-node) {
+  background: transparent !important;
+}
+
+:deep(.dark-tree .el-tree-node__content) {
+  background: transparent !important;
+  color: var(--text-secondary);
+  height: 36px;
+  border-radius: var(--radius-sm);
+  margin: 2px 0;
+  transition: all var(--transition-fast);
+}
+
+:deep(.dark-tree .el-tree-node__content:hover) {
+  background-color: var(--bg-tertiary) !important;
+}
+
+:deep(.dark-tree .el-tree-node.is-current > .el-tree-node__content) {
+  background-color: var(--selected-bg) !important;
+  color: #FFFFFF !important;
+}
+
+:deep(.dark-tree .el-tree-node.is-current > .el-tree-node__content .node-label) {
+  color: #FFFFFF !important;
+  font-weight: 500;
+}
+
+:deep(.dark-tree .el-tree-node.is-current > .el-tree-node__content .folder-icon) {
+  color: #FFFFFF !important;
+}
+
+:deep(.dark-tree .el-tree-node__expand-icon) {
+  color: var(--text-muted);
+}
+
+:deep(.dark-tree .el-tree-node__expand-icon.is-leaf) {
+  color: transparent;
 }
 </style>

@@ -26,8 +26,10 @@ request.interceptors.response.use(
     const skipErrorMessage = error?.config?.skipErrorMessage === true
 
     if (error.response) {
-      const { status, data } = error.response
-      if (status === 401) {
+      const { status, data, config } = error.response
+      // 排除登录接口的 401（登录失败是正常业务逻辑）
+      const isLoginApi = config.url === '/auth/login' || config.url === '/auth/register'
+      if (status === 401 && !isLoginApi) {
         removeToken()
         window.location.href = '/login'
         return

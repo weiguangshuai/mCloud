@@ -10,28 +10,45 @@
     <input ref="fileInput" type="file" multiple hidden @change="handleFileSelect" />
     <input ref="resumeFileInput" type="file" hidden @change="handleResumeFileSelect" />
 
-    <div v-if="isDragOver" class="drag-overlay">释放文件以上传</div>
+    <div v-if="isDragOver" class="drag-overlay">
+      <el-icon :size="32"><UploadFilled /></el-icon>
+      <span>释放文件以上传</span>
+    </div>
 
     <section class="transfer-panel" :class="{ collapsed: panelCollapsed }">
       <header class="transfer-header">
-        <div class="transfer-title">传输列表</div>
+        <div class="transfer-title">
+          <el-icon><Upload /></el-icon>
+          <span>传输列表</span>
+        </div>
         <div class="transfer-actions">
-          <el-button text size="small" :loading="loadingTasks" @click="refreshTasks">刷新</el-button>
+          <el-button text size="small" :loading="loadingTasks" @click="refreshTasks">
+            <el-icon><Refresh /></el-icon>
+          </el-button>
           <el-button text size="small" @click="panelCollapsed = !panelCollapsed">
-            {{ panelCollapsed ? '展开' : '收起' }}
+            <el-icon><ArrowDown v-if="panelCollapsed" /><ArrowUp v-else /></el-icon>
           </el-button>
         </div>
       </header>
 
       <div v-show="!panelCollapsed" class="transfer-body">
-        <div v-if="displayTasks.length === 0" class="transfer-empty">暂无传输任务</div>
+        <div v-if="displayTasks.length === 0" class="transfer-empty">
+          <el-icon :size="32"><Upload /></el-icon>
+          <span>暂无传输任务</span>
+        </div>
 
         <div v-for="task in displayTasks" :key="task.key" class="transfer-item">
-          <div class="transfer-name" :title="task.fileName">{{ task.fileName }}</div>
-          <div class="transfer-meta">{{ task.statusText }}</div>
+          <div class="transfer-name" :title="task.fileName">
+            <el-icon v-if="task.status === 'completed'" color="#34C759"><CircleCheck /></el-icon>
+            <el-icon v-else-if="task.status === 'failed'" color="#FF3B30"><CircleClose /></el-icon>
+            <el-icon v-else><Loading v-if="task.busy" /></el-icon>
+            <span>{{ task.fileName }}</span>
+          </div>
+          <div class="transfer-meta" :class="{ error: task.status === 'failed' }">{{ task.statusText }}</div>
           <el-progress
             :percentage="task.progress"
             :status="task.status === 'failed' || task.status === 'error' ? 'exception' : task.status === 'completed' ? 'success' : ''"
+            :show-text="false"
           />
           <div class="transfer-item-actions">
             <el-button
@@ -681,114 +698,178 @@ defineExpose({ triggerUpload, refreshTasks })
 }
 
 .drag-over {
-  outline: 2px dashed #409eff;
+  outline: 2px dashed var(--accent-primary);
   outline-offset: -2px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 
 .drag-overlay {
   position: fixed;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   z-index: 2000;
-  background: rgba(64, 158, 255, 0.12);
-  color: #409eff;
+  background: rgba(26, 26, 26, 0.9);
+  color: var(--accent-primary);
   font-size: 18px;
-  font-weight: 600;
+  font-family: var(--font-title);
+  font-weight: 500;
+  letter-spacing: 2px;
 }
 
+/* 传输面板 */
 .transfer-panel {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  width: min(420px, calc(100vw - 24px));
-  max-height: min(70vh, 520px);
-  border: 1px solid #dfe4ea;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(60vh, 480px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-secondary);
+  box-shadow: var(--shadow-md);
   z-index: 1500;
   overflow: hidden;
 }
 
 .transfer-panel.collapsed {
-  max-height: 52px;
+  max-height: 48px;
 }
 
 .transfer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid #eff3f8;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--bg-tertiary);
 }
 
 .transfer-title {
-  font-size: 14px;
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-title);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: var(--text-primary);
 }
 
 .transfer-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+}
+
+.transfer-actions :deep(.el-button) {
+  color: var(--text-secondary);
+}
+
+.transfer-actions :deep(.el-button:hover) {
+  color: var(--text-primary);
 }
 
 .transfer-body {
-  max-height: calc(min(70vh, 520px) - 52px);
+  max-height: calc(min(60vh, 480px) - 48px);
   overflow: auto;
-  padding: 10px 12px;
+  padding: 12px;
 }
 
 .transfer-empty {
-  color: #8b94a1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
   font-size: 13px;
-  padding: 16px 0;
+  padding: 24px 0;
   text-align: center;
 }
 
+/* 传输项 */
 .transfer-item {
-  border: 1px solid #edf1f5;
-  border-radius: 10px;
-  padding: 10px;
-  margin-bottom: 10px;
-  background: #fcfdff;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin-bottom: 8px;
+  background-color: var(--bg-primary);
+  transition: all var(--transition-fast);
 }
 
 .transfer-item:last-child {
   margin-bottom: 0;
 }
 
+.transfer-item:hover {
+  border-color: var(--border-light);
+}
+
 .transfer-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
-  font-weight: 600;
-  color: #1f2d3d;
+  font-weight: 500;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .transfer-meta {
-  margin: 4px 0 8px;
+  margin: 6px 0 8px;
   font-size: 12px;
-  color: #7b8794;
+  color: var(--text-muted);
+}
+
+.transfer-meta.error {
+  color: #FF3B30;
+}
+
+.transfer-item :deep(.el-progress) {
+  margin: 8px 0;
+}
+
+.transfer-item :deep(.el-progress-bar__outer) {
+  background-color: var(--bg-tertiary);
+}
+
+.transfer-item :deep(.el-progress-bar__inner) {
+  background-color: var(--accent-primary);
+}
+
+.transfer-item :deep(.el-progress-bar__outer) {
+  border-radius: 2px;
 }
 
 .transfer-item-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 
+/* 进度条成功/异常状态 */
+:deep(.el-progress--exception .el-progress-bar__inner) {
+  background-color: #FF3B30 !important;
+}
+
+:deep(.el-progress--success .el-progress-bar__inner) {
+  background-color: #34C759 !important;
+}
+
+/* 响应式 */
 @media (max-width: 768px) {
   .transfer-panel {
     right: 8px;
     bottom: 8px;
     width: calc(100vw - 16px);
-    max-height: min(60vh, 480px);
+    max-height: min(50vh, 400px);
   }
 }
 </style>

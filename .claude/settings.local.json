@@ -16,7 +16,9 @@
       "Bash(python -c \"\nwith open\\('C:/code/mCloud/doc/私人网盘系统设计方案.md', 'r', encoding='utf-8'\\) as f:\n    content = f.read\\(\\)\nprint\\('File length:', len\\(content\\)\\)\nprint\\('First 1000 chars:'\\)\nprint\\(content[:1000]\\)\n\")",
       "Bash(python \"C:/code/mCloud/doc/fix_doc.py\")",
       "Bash(ls -la C:/code/mCloud/backend/services/*_test.go C:/code/mCloud/backend/repositories/*_test.go 2>/dev/null | wc -l)",
-      "Bash(ls C:/code/mCloud/backend/services/*_test.go C:/code/mCloud/backend/repositories/*_test.go 2>/dev/null)"
+      "Bash(ls C:/code/mCloud/backend/services/*_test.go C:/code/mCloud/backend/repositories/*_test.go 2>/dev/null)",
+      "Bash(curl -s -X POST http://localhost:8080/api/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"test\",\"password\":\"test123\"}' 2>&1)",
+      "Bash(cd /c/code/mCloud/frontend && npm run build 2>&1 | head -50)"
     ]
   }
 }

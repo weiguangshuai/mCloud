@@ -1,21 +1,40 @@
-﻿<template>
+<template>
   <div class="home-container">
     <!-- 顶部导航栏 -->
     <el-header class="header">
       <div class="header-left">
         <el-button class="menu-btn" :icon="Menu" @click="sidebarVisible = !sidebarVisible" />
-        <h3>mCloud</h3>
+        <div class="logo">
+          <el-icon :size="24"><Cloudy /></el-icon>
+          <span class="logo-text">MCLOUD</span>
+        </div>
       </div>
       <div class="header-right">
-        <el-button type="primary" :icon="Upload" @click="uploadRef?.triggerUpload()">上传</el-button>
-        <el-button :icon="FolderAdd" @click="showNewFolderDialog">新建文件夹</el-button>
-        <el-button :icon="Delete" @click="showRecycleBin = true">回收站</el-button>
+        <el-button type="primary" :icon="Upload" @click="uploadRef?.triggerUpload()">
+          <span class="btn-text">上传</span>
+        </el-button>
+        <el-button :icon="FolderAdd" @click="showNewFolderDialog">
+          <span class="btn-text">新建</span>
+        </el-button>
+        <el-button :icon="Delete" @click="showRecycleBin = true">
+          <span class="btn-text">回收站</span>
+        </el-button>
         <el-dropdown @command="handleUserCommand">
-          <span class="user-info">{{ userStore.userInfo?.nickname || userStore.userInfo?.username }}</span>
+          <div class="user-info">
+            <el-icon :size="18"><User /></el-icon>
+            <span class="username">{{ userStore.userInfo?.nickname || userStore.userInfo?.username }}</span>
+            <el-icon :size="14"><ArrowDown /></el-icon>
+          </div>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="quota">存储空间</el-dropdown-item>
-              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+              <el-dropdown-item command="quota">
+                <el-icon><Box /></el-icon>
+                存储空间
+              </el-dropdown-item>
+              <el-dropdown-item command="logout" divided>
+                <el-icon><SwitchButton /></el-icon>
+                退出登录
+              </el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -25,6 +44,9 @@
     <div class="main-content">
       <!-- 左侧文件夹树 -->
       <aside class="sidebar" :class="{ visible: sidebarVisible }">
+        <div class="sidebar-header">
+          <span class="sidebar-title">文件</span>
+        </div>
         <FolderTree @select="handleFolderSelect" />
       </aside>
 
@@ -49,7 +71,7 @@
     <RecycleBin v-model:visible="showRecycleBin" @restored="refreshFileList" />
 
     <!-- 新建文件夹对话框 -->
-    <el-dialog v-model="newFolderVisible" title="新建文件夹" width="400px">
+    <el-dialog v-model="newFolderVisible" title="新建文件夹" width="400px" class="dark-dialog">
       <el-input v-model="newFolderName" placeholder="请输入文件夹名称" @keyup.enter="createNewFolder" />
       <template #footer>
         <el-button @click="newFolderVisible = false">取消</el-button>
@@ -63,7 +85,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, FolderAdd, Delete, Menu } from '@element-plus/icons-vue'
+import { Upload, FolderAdd, Delete, Menu, Cloudy, User, ArrowDown, Box, SwitchButton } from '@element-plus/icons-vue'
 import { useUserStore } from '../store'
 import { getProfile } from '../api/auth'
 import { createFolder } from '../api/folder'
@@ -154,28 +176,197 @@ function formatSize(bytes) {
 </script>
 
 <style scoped>
-.home-container { display: flex; flex-direction: column; height: 100vh; }
-.header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 16px; border-bottom: 1px solid #e4e7ed; background: #fff;
+.home-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background-color: var(--bg-primary);
 }
-.header-left { display: flex; align-items: center; gap: 12px; }
-.header-left h3 { color: #409eff; margin: 0; }
-.header-right { display: flex; align-items: center; gap: 8px; }
-.user-info { cursor: pointer; color: #409eff; }
-.menu-btn { display: none; }
-.main-content { display: flex; flex: 1; overflow: hidden; }
-.sidebar { width: 250px; border-right: 1px solid #e4e7ed; overflow-y: auto; background: #fafafa; padding: 8px; }
-.content { flex: 1; padding: 16px; overflow-y: auto; }
 
+/* 顶部导航栏 */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 60px;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: var(--shadow-soft);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent-primary);
+}
+
+.logo-text {
+  font-family: var(--font-title);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-right :deep(.el-button) {
+  font-family: var(--font-body);
+  font-size: 14px;
+  background-color: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.header-right :deep(.el-button:hover) {
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.header-right :deep(.el-button--primary) {
+  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-hover) 100%);
+  border: none;
+  color: #FFFFFF;
+  box-shadow: 0 2px 8px rgba(45, 55, 72, 0.2);
+}
+
+.header-right :deep(.el-button--primary:hover) {
+  box-shadow: 0 4px 12px rgba(45, 55, 72, 0.25);
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.user-info:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.username {
+  font-size: 14px;
+}
+
+.menu-btn {
+  display: none;
+}
+
+/* 主内容区 */
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 侧边栏 */
+.sidebar {
+  width: 240px;
+  background-color: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.sidebar-title {
+  font-family: var(--font-title);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* 内容区 */
+.content {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  background-color: var(--bg-primary);
+}
+
+/* 下拉菜单样式 */
+:deep(.el-dropdown-menu__item) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  padding: 10px 16px;
+}
+
+:deep(.el-dropdown-menu__item .el-icon) {
+  margin-right: 4px;
+}
+
+/* 响应式 */
 @media (max-width: 768px) {
-  .menu-btn { display: inline-flex; }
-  .sidebar { position: fixed; left: -260px; top: 60px; bottom: 0; z-index: 100; transition: left 0.3s; }
-  .sidebar.visible { left: 0; }
-  .header-right .el-button span { display: none; }
+  .menu-btn {
+    display: inline-flex;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: -250px;
+    top: 60px;
+    bottom: 0;
+    z-index: 100;
+    transition: left var(--transition-normal);
+  }
+
+  .sidebar.visible {
+    left: 0;
+  }
+
+  .header-right .btn-text {
+    display: none;
+  }
+
+  .logo-text {
+    display: none;
+  }
+
+  .content {
+    padding: 16px;
+  }
+}
+
+/* 对话框覆盖 */
+:deep(.dark-dialog) {
+  background-color: var(--bg-secondary) !important;
+}
+
+:deep(.dark-dialog .el-dialog__header) {
+  border-bottom: 1px solid var(--border-color);
+}
+
+:deep(.dark-dialog .el-dialog__title) {
+  font-family: var(--font-title);
+  letter-spacing: 1px;
 }
 </style>
-
-
-
-

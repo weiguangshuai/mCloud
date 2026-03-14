@@ -1,20 +1,42 @@
 <template>
-  <el-drawer v-model="drawerVisible" title="回收站" size="400px">
-    <div v-if="items.length === 0" class="empty">
-      <el-empty description="回收站为空" />
-    </div>
-    <div v-for="item in items" :key="item.id" class="recycle-item">
-      <div class="item-info">
-        <el-icon><Document v-if="item.original_type === 'file'" /><Folder v-else /></el-icon>
-        <span>{{ item.original_name }}</span>
+  <el-drawer v-model="drawerVisible" title="回收站" size="400px" class="dark-drawer">
+    <template #header>
+      <div class="drawer-header">
+        <el-icon><Delete /></el-icon>
+        <span>回收站</span>
       </div>
-      <div class="item-actions">
-        <el-button size="small" type="primary" text @click="restore(item.id)">恢复</el-button>
-        <el-button size="small" type="danger" text @click="permanentDel(item.id)">删除</el-button>
+    </template>
+
+    <div v-if="items.length === 0" class="empty">
+      <el-empty description="回收站为空">
+        <template #image>
+          <el-icon :size="48" color="var(--text-muted)"><DeleteFilled /></el-icon>
+        </template>
+      </el-empty>
+    </div>
+    <div v-else class="recycle-list">
+      <div v-for="item in items" :key="item.id" class="recycle-item">
+        <div class="item-info">
+          <el-icon class="item-icon">
+            <Document v-if="item.original_type === 'file'" />
+            <Folder v-else />
+          </el-icon>
+          <div class="item-detail">
+            <span class="item-name">{{ item.original_name }}</span>
+            <span class="item-time">{{ formatDate(item.deleted_at) }}</span>
+          </div>
+        </div>
+        <div class="item-actions">
+          <el-button size="small" type="primary" text @click="restore(item.id)">恢复</el-button>
+          <el-button size="small" type="danger" text @click="permanentDel(item.id)">删除</el-button>
+        </div>
       </div>
     </div>
     <template #footer>
-      <el-button type="danger" @click="emptyAll" :disabled="items.length === 0">清空回收站</el-button>
+      <el-button type="danger" @click="emptyAll" :disabled="items.length === 0">
+        <el-icon><Delete /></el-icon>
+        清空回收站
+      </el-button>
     </template>
   </el-drawer>
 </template>
@@ -22,7 +44,7 @@
 <script setup>
 import { ref, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Document, Folder } from '@element-plus/icons-vue'
+import { Document, Folder, Delete, DeleteFilled } from '@element-plus/icons-vue'
 import { listRecycleBin, restoreItem, permanentDelete, emptyRecycleBin } from '../api/recycleBin'
 
 const props = defineProps({ visible: { type: Boolean, default: false } })
@@ -69,15 +91,108 @@ async function emptyAll() {
   } catch (e) {}
 }
 
+function formatDate(dateStr) {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  return d.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 watch(() => props.visible, (val) => { if (val) loadItems() })
 </script>
 
 <style scoped>
-.recycle-item {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 0; border-bottom: 1px solid #f0f0f0;
+.drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-title);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: var(--text-primary);
 }
-.item-info { display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden; }
-.item-info span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.empty { padding: 40px 0; }
+
+.recycle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recycle-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  transition: all var(--transition-fast);
+}
+
+.recycle-item:hover {
+  border-color: var(--border-light);
+}
+
+.item-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.item-icon {
+  font-size: 20px;
+  color: var(--text-muted);
+}
+
+.item-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.item-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.item-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.empty {
+  padding: 40px 0;
+}
+
+/* Drawer 样式覆盖 */
+:deep(.dark-drawer) {
+  background-color: var(--bg-secondary) !important;
+}
+
+:deep(.dark-drawer .el-drawer__header) {
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 0;
+  padding: 16px;
+}
+
+:deep(.dark-drawer .el-drawer__body) {
+  padding: 12px 16px;
+  background-color: var(--bg-secondary);
+}
+
+:deep(.dark-drawer .el-drawer__footer) {
+  border-top: 1px solid var(--border-color);
+  padding: 12px 16px;
+}
 </style>
