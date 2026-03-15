@@ -83,7 +83,7 @@ async function handleLogin() {
 
   loading.value = true
   try {
-    const res = await login(form)
+    const res = await login(form, { skipErrorMessage: true })
     setToken(res.data.token)
     userStore.setUser(res.data.user)
     ElMessage.success('登录成功')

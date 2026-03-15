@@ -84,15 +84,15 @@ func (s *authService) Register(ctx context.Context, in RegisterInput) (LoginOutp
 	// 先做用户名唯一性校验，避免无效事务开销。
 	count, err := s.users.CountByUsername(ctx, in.Username)
 	if err != nil {
-		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to check username", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "检查用户名失败", err)
 	}
 	if count > 0 {
-		return LoginOutput{}, newAppError(http.StatusBadRequest, "username already exists", nil)
+		return LoginOutput{}, newAppError(http.StatusBadRequest, "用户名已存在", nil)
 	}
 
 	hashedPassword, err := utils.HashPassword(in.Password)
 	if err != nil {
-		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to hash password", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "密码加密失败", err)
 	}
 
 	user := models.User{
@@ -111,12 +111,12 @@ func (s *authService) Register(ctx context.Context, in RegisterInput) (LoginOutp
 		return err
 	})
 	if err != nil {
-		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to create user", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "创建用户失败", err)
 	}
 
 	token, err := utils.GenerateToken(user.ID)
 	if err != nil {
-		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to generate token", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "生成令牌失败", err)
 	}
 
 	return LoginOutput{
@@ -130,19 +130,19 @@ func (s *authService) Login(ctx context.Context, in LoginInput) (LoginOutput, er
 	user, err := s.users.GetByUsername(ctx, nil, in.Username)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return LoginOutput{}, newAppError(http.StatusUnauthorized, "invalid username or password", nil)
+			return LoginOutput{}, newAppError(http.StatusUnauthorized, "用户名或密码错误", nil)
 		}
-		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to query user", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "查询用户失败", err)
 	}
 
 	// 账号存在时仍需校验哈希密码，避免明文比较。
 	if !utils.CheckPassword(in.Password, user.Password) {
-		return LoginOutput{}, newAppError(http.StatusUnauthorized, "invalid username or password", nil)
+		return LoginOutput{}, newAppError(http.StatusUnauthorized, "用户名或密码错误", nil)
 	}
 
 	token, err := utils.GenerateToken(user.ID)
 	if err != nil {
-		return LoginOutput{}, newAppError(http.StatusInternalServerError, "failed to generate token", err)
+		return LoginOutput{}, newAppError(http.StatusInternalServerError, "生成令牌失败", err)
 	}
 
 	return LoginOutput{
@@ -156,7 +156,7 @@ func (s *authService) GetProfile(ctx context.Context, userID uint) (ProfileOutpu
 	user, err := s.users.GetByID(ctx, nil, userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ProfileOutput{}, newAppError(http.StatusNotFound, "user not found", nil)
+			return ProfileOutput{}, newAppError(http.StatusNotFound, "用户不存在", nil)
 		}
 		return ProfileOutput{}, newAppError(http.StatusInternalServerError, "failed to query user", err)
 	}
@@ -164,7 +164,7 @@ func (s *authService) GetProfile(ctx context.Context, userID uint) (ProfileOutpu
 	// 对历史数据做兜底：若根目录缺失则自动补建。
 	rootFolder, err := s.resolver.getOrCreateUserRootFolder(ctx, nil, user.ID)
 	if err != nil {
-		return ProfileOutput{}, newAppError(http.StatusInternalServerError, "failed to load root folder", err)
+		return ProfileOutput{}, newAppError(http.StatusInternalServerError, "加载根文件夹失败", err)
 	}
 
 	return ProfileOutput{

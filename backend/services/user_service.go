@@ -43,9 +43,9 @@ func (s *userService) GetStorageQuota(ctx context.Context, userID uint) (Storage
 	user, err := s.users.GetByID(ctx, nil, userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return StorageQuotaOutput{}, newAppError(http.StatusNotFound, "user not found", nil)
+			return StorageQuotaOutput{}, newAppError(http.StatusNotFound, "用户不存在", nil)
 		}
-		return StorageQuotaOutput{}, newAppError(http.StatusInternalServerError, "failed to query user", err)
+		return StorageQuotaOutput{}, newAppError(http.StatusInternalServerError, "查询用户失败", err)
 	}
 
 	// 仅在总配额大于 0 时计算占比，避免除零错误。

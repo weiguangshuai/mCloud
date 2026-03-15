@@ -311,13 +311,13 @@ func (s *fileService) UploadFile(ctx context.Context, userID uint, folderID uint
 			return s.users.AddStorageUsed(ctx, tx, userID, header.Size)
 		})
 		if err != nil {
-			return models.File{}, newAppError(http.StatusInternalServerError, "failed to save file record", err)
+			return models.File{}, newAppError(http.StatusInternalServerError, "保存文件记录失败", err)
 		}
 		fileRecord.FileObject = existingObj
 		return fileRecord, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.File{}, newAppError(http.StatusInternalServerError, "failed to check duplicate file", err)
+		return models.File{}, newAppError(http.StatusInternalServerError, "检查重复文件失败", err)
 	}
 
 	now := time.Now()
@@ -493,15 +493,15 @@ func (s *fileService) InitChunkedUpload(ctx context.Context, userID uint, in Ini
 // QueryUploadTask 根据文件签名查询是否存在可续传任务。
 func (s *fileService) QueryUploadTask(ctx context.Context, userID uint, in QueryUploadTaskInput) (QueryUploadTaskOutput, error) {
 	if !isFileExtensionAllowed(in.FileName) {
-		return QueryUploadTaskOutput{}, newAppError(http.StatusBadRequest, "unsupported file type", nil)
+		return QueryUploadTaskOutput{}, newAppError(http.StatusBadRequest, "不支持的文件类型", nil)
 	}
 
 	resolvedFolderID, err := s.resolver.resolveFolderIDForUser(ctx, nil, userID, in.FolderID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return QueryUploadTaskOutput{}, newAppError(http.StatusNotFound, "target folder not found", nil)
+			return QueryUploadTaskOutput{}, newAppError(http.StatusNotFound, "目标文件夹不存在", nil)
 		}
-		return QueryUploadTaskOutput{}, newAppError(http.StatusInternalServerError, "failed to validate target folder", err)
+		return QueryUploadTaskOutput{}, newAppError(http.StatusInternalServerError, "验证目标文件夹失败", err)
 	}
 
 	task, err := s.uploadTasks.FindResumableBySignature(ctx, nil, userID, resolvedFolderID, in.FileName, in.FileSize, in.FileMD5, time.Now())
@@ -509,7 +509,7 @@ func (s *fileService) QueryUploadTask(ctx context.Context, userID uint, in Query
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return QueryUploadTaskOutput{Resumable: false}, nil
 		}
-		return QueryUploadTaskOutput{}, newAppError(http.StatusInternalServerError, "failed to query resumable task", err)
+		return QueryUploadTaskOutput{}, newAppError(http.StatusInternalServerError, "查询上传任务失败", err)
 	}
 
 	uploadedChunks := s.listUploadedChunks(ctx, task)
@@ -532,7 +532,7 @@ func (s *fileService) ListUploadTasks(ctx context.Context, userID uint) ([]Uploa
 	completedSince := now.Add(-uploadCompletedVisibleDuration())
 	tasks, err := s.uploadTasks.ListVisibleByUser(ctx, nil, userID, now, completedSince)
 	if err != nil {
-		return nil, newAppError(http.StatusInternalServerError, "failed to list upload tasks", err)
+		return nil, newAppError(http.StatusInternalServerError, "查询上传任务失败", err)
 	}
 
 	result := make([]UploadTaskListItemOutput, 0, len(tasks))
@@ -574,9 +574,9 @@ func (s *fileService) GetUploadTaskDetail(ctx context.Context, userID uint, uplo
 	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return UploadTaskDetailOutput{}, newAppError(http.StatusNotFound, "upload task not found", nil)
+			return UploadTaskDetailOutput{}, newAppError(http.StatusNotFound, "上传任务不存在", nil)
 		}
-		return UploadTaskDetailOutput{}, newAppError(http.StatusInternalServerError, "failed to query upload task", err)
+		return UploadTaskDetailOutput{}, newAppError(http.StatusInternalServerError, "查询上传任务失败", err)
 	}
 
 	uploadedChunks := s.listUploadedChunks(ctx, task)
@@ -608,12 +608,12 @@ func (s *fileService) CancelUploadTask(ctx context.Context, userID uint, uploadI
 	task, err := s.uploadTasks.GetByUploadIDAndUser(ctx, nil, uploadID, userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return newAppError(http.StatusNotFound, "upload task not found", nil)
+			return newAppError(http.StatusNotFound, "上传任务不存在", nil)
 		}
-		return newAppError(http.StatusInternalServerError, "failed to query upload task", err)
+		return newAppError(http.StatusInternalServerError, "查询上传任务失败", err)
 	}
 	if task.Status == "completed" {
-		return newAppError(http.StatusBadRequest, "cannot cancel completed task", nil)
+		return newAppError(http.StatusBadRequest, "无法取消已完成的任务", nil)
 	}
 
 	if task.TempDir != "" {
@@ -624,7 +624,7 @@ func (s *fileService) CancelUploadTask(ctx context.Context, userID uint, uploadI
 		_ = s.uploadProgress.Clear(ctx, uploadID)
 	}
 	if err := s.uploadTasks.DeleteByID(ctx, nil, task.ID); err != nil {
-		return newAppError(http.StatusInternalServerError, "failed to cancel upload task", err)
+		return newAppError(http.StatusInternalServerError, "取消上传任务失败", err)
 	}
 	return nil
 }
@@ -763,7 +763,7 @@ func (s *fileService) UploadChunk(ctx context.Context, userID uint, uploadID str
 		return UploadChunkOutput{}, newAppError(http.StatusForbidden, "无权操作此上传任务", nil)
 	}
 	if chunkIndex < 0 || chunkIndex >= task.TotalChunks {
-		return UploadChunkOutput{}, newAppError(http.StatusBadRequest, "invalid chunk index", nil)
+		return UploadChunkOutput{}, newAppError(http.StatusBadRequest, "无效的分片索引", nil)
 	}
 
 	uploaded := chunkFileExists(task.TempDir, chunkIndex)
@@ -929,7 +929,7 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 			return s.uploadTasks.MarkCompleted(ctx, tx, uploadID, time.Now())
 		})
 		if err != nil {
-			return models.File{}, newAppError(http.StatusInternalServerError, "failed to save file record", err)
+			return models.File{}, newAppError(http.StatusInternalServerError, "保存文件记录失败", err)
 		}
 		_ = s.uploadTasks.UpdateUploadedChunksSnapshot(ctx, nil, uploadID, marshalUploadedChunks(makeRangeChunks(task.TotalChunks)))
 		_ = os.Remove(finalPath)
@@ -942,7 +942,7 @@ func (s *fileService) CompleteUpload(ctx context.Context, userID uint, uploadID 
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		_ = os.Remove(finalPath)
-		return models.File{}, newAppError(http.StatusInternalServerError, "failed to check duplicate file", err)
+		return models.File{}, newAppError(http.StatusInternalServerError, "检查重复文件失败", err)
 	}
 
 	// 图片文件尝试生成缩略图与尺寸元数据，失败不阻断主流程。

@@ -26,7 +26,7 @@ func RestoreItem(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	itemID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid recycle-bin item id")
+		utils.Error(c, http.StatusBadRequest, "无效的回收站项目ID")
 		return
 	}
 
@@ -34,14 +34,14 @@ func RestoreItem(c *gin.Context) {
 		return
 	}
 
-	utils.SuccessWithMessage(c, "restored", nil)
+	utils.SuccessWithMessage(c, "已恢复", nil)
 }
 
 func PermanentDelete(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	itemID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid recycle-bin item id")
+		utils.Error(c, http.StatusBadRequest, "无效的回收站项目ID")
 		return
 	}
 
@@ -49,7 +49,7 @@ func PermanentDelete(c *gin.Context) {
 		return
 	}
 
-	utils.SuccessWithMessage(c, "permanently deleted", nil)
+	utils.SuccessWithMessage(c, "已永久删除", nil)
 }
 
 func EmptyRecycleBin(c *gin.Context) {
@@ -57,5 +57,5 @@ func EmptyRecycleBin(c *gin.Context) {
 	if err := getServices().RecycleBin.EmptyRecycleBin(c.Request.Context(), userID); respondServiceError(c, err) {
 		return
 	}
-	utils.SuccessWithMessage(c, "recycle bin emptied", nil)
+	utils.SuccessWithMessage(c, "回收站已清空", nil)
 }

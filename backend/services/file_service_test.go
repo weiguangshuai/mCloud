@@ -462,7 +462,7 @@ func TestFileServiceUploadFileDuplicateCheckFailure(t *testing.T) {
 	if appErr.HTTPCode != http.StatusInternalServerError {
 		t.Fatalf("expected HTTP 500, got %d", appErr.HTTPCode)
 	}
-	if appErr.Message != "failed to check duplicate file" {
+	if appErr.Message != "检查重复文件失败" {
 		t.Fatalf("unexpected error message: %s", appErr.Message)
 	}
 	if len(files.created) != 0 {

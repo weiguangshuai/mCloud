@@ -18,7 +18,11 @@
       "Bash(ls -la C:/code/mCloud/backend/services/*_test.go C:/code/mCloud/backend/repositories/*_test.go 2>/dev/null | wc -l)",
       "Bash(ls C:/code/mCloud/backend/services/*_test.go C:/code/mCloud/backend/repositories/*_test.go 2>/dev/null)",
       "Bash(curl -s -X POST http://localhost:8080/api/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"test\",\"password\":\"test123\"}' 2>&1)",
-      "Bash(cd /c/code/mCloud/frontend && npm run build 2>&1 | head -50)"
+      "Bash(cd /c/code/mCloud/frontend && npm run build 2>&1 | head -50)",
+      "Bash(cmd /c \"powershell.exe -NoProfile -Command \\\\\"& { function claude-wgs { claude --dangerously-skip-permissions @args }; claude-wgs --version }\\\\\" 2>&1\")",
+      "Bash(powershell.exe -NoProfile -Command \"claude --version\" 2>&1)",
+      "Bash(powershell.exe -Command \". $PROFILE; claude-wgs --version\" 2>&1)",
+      "Bash(powershell.exe -NoProfile -Command \"function claude-wgs { claude --dangerously-skip-permissions @args }; claude-wgs --version\")"
     ]
   }
 }

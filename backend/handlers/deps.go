@@ -32,6 +32,6 @@ func respondServiceError(c *gin.Context, err error) bool {
 		}
 		return true
 	}
-	utils.Error(c, 500, "internal error")
+	utils.Error(c, 500, "服务器内部错误")
 	return true
 }

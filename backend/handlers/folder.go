@@ -25,7 +25,7 @@ func ListFolders(c *gin.Context) {
 	if parentIDStr, exists := c.GetQuery("parent_id"); exists {
 		parsedParentID, err := strconv.ParseUint(parentIDStr, 10, 32)
 		if err != nil {
-			utils.Error(c, http.StatusBadRequest, "invalid parent_id")
+			utils.Error(c, http.StatusBadRequest, "无效的父文件夹ID")
 			return
 		}
 		tmp := uint(parsedParentID)
@@ -61,7 +61,7 @@ func RenameFolder(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	folderID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid folder id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件夹ID")
 		return
 	}
 
@@ -83,7 +83,7 @@ func DeleteFolder(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	folderID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid folder id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件夹ID")
 		return
 	}
 
@@ -91,5 +91,5 @@ func DeleteFolder(c *gin.Context) {
 		return
 	}
 
-	utils.SuccessWithMessage(c, "folder deleted", nil)
+	utils.SuccessWithMessage(c, "文件夹已删除", nil)
 }

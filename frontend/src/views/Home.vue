@@ -157,7 +157,10 @@ async function createNewFolder() {
 
 function handleUserCommand(command) {
   if (command === 'logout') {
-    ElMessageBox.confirm('确定退出登录？', '提示').then(() => {
+    ElMessageBox.confirm('确定退出登录？', '提示', {
+      confirmButtonText: '确认',
+      cancelButtonText: '取消',
+    }).then(() => {
       removeToken()
       userStore.clearUser()
       router.push('/login')

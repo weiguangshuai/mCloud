@@ -17,7 +17,7 @@ func ListFiles(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	folderID, err := strconv.ParseUint(c.DefaultQuery("folder_id", "0"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid folder_id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件夹ID")
 		return
 	}
 
@@ -42,7 +42,7 @@ func UploadFile(c *gin.Context) {
 	if folderIDStr != "" {
 		parsed, err := strconv.ParseUint(folderIDStr, 10, 32)
 		if err != nil {
-			utils.Error(c, http.StatusBadRequest, "invalid folder_id")
+			utils.Error(c, http.StatusBadRequest, "无效的文件夹ID")
 			return
 		}
 		folderID = parsed
@@ -50,7 +50,7 @@ func UploadFile(c *gin.Context) {
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "failed to read upload file")
+		utils.Error(c, http.StatusBadRequest, "读取上传文件失败")
 		return
 	}
 	defer file.Close()
@@ -90,7 +90,7 @@ func InitChunkedUpload(c *gin.Context) {
 
 	if result.Status == "instant_upload" {
 		logger.Debugf("[upload] instant success user=%d file=%q size=%d file_id=%d", userID, req.FileName, req.FileSize, result.FileID)
-		utils.SuccessWithMessage(c, "instant upload success", gin.H{"status": result.Status, "file_id": result.FileID})
+		utils.SuccessWithMessage(c, "秒传成功", gin.H{"status": result.Status, "file_id": result.FileID})
 		return
 	}
 	logger.Infof("[upload] init success user=%d upload_id=%s file=%q size=%d chunks=%d chunk_size=%d", userID, result.UploadID, req.FileName, req.FileSize, result.TotalChunks, result.ChunkSize)
@@ -135,14 +135,14 @@ func UploadChunk(c *gin.Context) {
 	chunkIndex, err := strconv.Atoi(c.PostForm("chunk_index"))
 	if err != nil {
 		logger.Debugf("[upload] chunk invalid index user=%d upload_id=%s value=%q", userID, uploadID, c.PostForm("chunk_index"))
-		utils.Error(c, http.StatusBadRequest, "invalid chunk_index")
+		utils.Error(c, http.StatusBadRequest, "无效的分片索引")
 		return
 	}
 
 	chunk, header, err := c.Request.FormFile("chunk")
 	if err != nil {
 		logger.Debugf("[upload] chunk read failed user=%d upload_id=%s chunk=%d err=%v", userID, uploadID, chunkIndex, err)
-		utils.Error(c, http.StatusBadRequest, "failed to read chunk")
+		utils.Error(c, http.StatusBadRequest, "读取分片失败")
 		return
 	}
 	defer chunk.Close()
@@ -184,7 +184,7 @@ func CancelUploadTask(c *gin.Context) {
 	if err := getServices().File.CancelUploadTask(c.Request.Context(), userID, uploadID); respondServiceError(c, err) {
 		return
 	}
-	utils.SuccessWithMessage(c, "upload task canceled", nil)
+	utils.SuccessWithMessage(c, "上传任务已取消", nil)
 }
 
 func CompleteUpload(c *gin.Context) {
@@ -213,7 +213,7 @@ func DownloadFile(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	fileID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid file id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
@@ -251,7 +251,7 @@ func PreviewFile(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	fileID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid file id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
@@ -270,7 +270,7 @@ func GetThumbnail(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	fileID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid file id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
@@ -288,7 +288,7 @@ func DeleteFile(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	fileID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid file id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
@@ -296,14 +296,14 @@ func DeleteFile(c *gin.Context) {
 		return
 	}
 
-	utils.SuccessWithMessage(c, "file deleted", nil)
+	utils.SuccessWithMessage(c, "文件已删除", nil)
 }
 
 func RenameFile(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	fileID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid file id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
@@ -326,7 +326,7 @@ func MoveFile(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	fileID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
-		utils.Error(c, http.StatusBadRequest, "invalid file id")
+		utils.Error(c, http.StatusBadRequest, "无效的文件ID")
 		return
 	}
 
@@ -341,7 +341,7 @@ func MoveFile(c *gin.Context) {
 	if err := getServices().File.MoveFile(c.Request.Context(), userID, uint(fileID), req.FolderID); respondServiceError(c, err) {
 		return
 	}
-	utils.SuccessWithMessage(c, "file moved", nil)
+	utils.SuccessWithMessage(c, "文件已移动", nil)
 }
 
 func BatchDeleteFiles(c *gin.Context) {
@@ -357,7 +357,7 @@ func BatchDeleteFiles(c *gin.Context) {
 	if err := getServices().File.BatchDeleteFiles(c.Request.Context(), userID, req.FileIDs); respondServiceError(c, err) {
 		return
 	}
-	utils.SuccessWithMessage(c, "batch delete success", nil)
+	utils.SuccessWithMessage(c, "批量删除成功", nil)
 }
 
 func BatchMoveFiles(c *gin.Context) {
@@ -374,7 +374,7 @@ func BatchMoveFiles(c *gin.Context) {
 	if err := getServices().File.BatchMoveFiles(c.Request.Context(), userID, req.FileIDs, req.FolderID); respondServiceError(c, err) {
 		return
 	}
-	utils.SuccessWithMessage(c, "batch move success", nil)
+	utils.SuccessWithMessage(c, "批量移动成功", nil)
 }
 
 func BatchGetThumbnails(c *gin.Context) {
